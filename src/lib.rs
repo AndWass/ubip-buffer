@@ -3,92 +3,78 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(core::fmt::Debug, PartialEq)]
-pub enum CommitError
-{
-    NotEnoughPrepared {
-        prepared: usize
-    }
+pub enum CommitError {
+    NotEnoughPrepared { prepared: usize },
 }
 
 #[derive(core::fmt::Debug, PartialEq)]
-pub enum PrepareError
-{
-    UncommitedData {
-        amount: usize,
-    },
-    NoRoom {
-        max_available: usize
-    }
+pub enum PrepareError {
+    UncommitedData { amount: usize },
+    NoRoom { max_available: usize },
 }
 
 /// A [BipBuffer](https://ferrous-systems.com/blog/lock-free-ring-buffer/) with completely external
 /// storage.
 ///
 /// The user has complete control over the storage, if it's dynamically allocated or statically.
-pub struct BipBuffer<'a, T>
-{
+pub struct BipBuffer<'a, T> {
     buffer: &'a mut [T],
     watermark: AtomicUsize,
     read: AtomicUsize,
     write: AtomicUsize,
-    rw_taken: bool
+    rw_taken: bool,
 }
 
-impl<'a, T> BipBuffer<'a, T>
-{
+impl<'a, T> BipBuffer<'a, T> {
     pub const fn capacity(&self) -> usize {
         return self.buffer.len();
     }
 }
 
-impl<'a, T: Clone> BipBuffer<'a, T>
-{
+impl<'a, T: Clone> BipBuffer<'a, T> {
     pub fn new(buffer: &'a mut [T]) -> Self {
         BipBuffer {
             buffer: buffer,
             watermark: AtomicUsize::new(0),
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
-            rw_taken: false
+            rw_taken: false,
         }
     }
 
-    pub fn take_reader_writer(&mut self) -> Option<(BipBufferReader<'a, T>, BipBufferWriter<'a, T>)> {
+    pub fn take_reader_writer(
+        &mut self,
+    ) -> Option<(BipBufferReader<'a, T>, BipBufferWriter<'a, T>)> {
         if self.rw_taken {
             return None;
         }
         self.rw_taken = true;
-        return Some(
-            (BipBufferReader {
-                buffer: self
-            },
+        return Some((
+            BipBufferReader { buffer: self },
             BipBufferWriter {
                 buffer: self,
-                prepared: 0
-            })
-        );
+                prepared: 0,
+            },
+        ));
     }
 }
 
-pub struct BipBufferReader<'a, T>
-{
-    buffer: *mut BipBuffer<'a, T>
+pub struct BipBufferReader<'a, T> {
+    buffer: *mut BipBuffer<'a, T>,
 }
 
 unsafe impl<'a, T> core::marker::Send for BipBufferReader<'a, T> {}
 
-impl<'a, T: Clone> BipBufferReader<'a, T>
-{
+impl<'a, T: Clone> BipBufferReader<'a, T> {
     pub fn values(&self) -> &'a [T] {
         let buffer = unsafe { &(*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
         let read = buffer.read.load(Ordering::SeqCst);
 
         if write >= read {
-            let size = write-read;
-            return &buffer.buffer[read..(read+size)];
-        }
-        else {
+            let size = write - read;
+            return &buffer.buffer[read..(read + size)];
+        } else {
             // Read leads write, so we can return [read, watermark)
             let watermark = buffer.watermark.load(Ordering::SeqCst);
             if watermark > read {
@@ -106,18 +92,17 @@ impl<'a, T: Clone> BipBufferReader<'a, T>
         let read = buffer.read.load(Ordering::SeqCst);
         if write >= read {
             // Write leads read, we can at most consume (write - read) number of elements
-            if amount > (write-read) {
-                return Err(write-read);
+            if amount > (write - read) {
+                return Err(write - read);
             }
-            buffer.read.store(read+amount, Ordering::SeqCst);
+            buffer.read.store(read + amount, Ordering::SeqCst);
             return Ok(());
-        }
-        else {
+        } else {
             // Read leads write, we can at most consume all data from read to watermark
             // plus any written data before read.
             let watermark = buffer.watermark.load(Ordering::SeqCst);
             let available_for_consumption = watermark - read + write;
-            if amount > available_for_consumption{
+            if amount > available_for_consumption {
                 return Err(available_for_consumption);
             }
             // Handle wrapping at the watermark
@@ -128,23 +113,21 @@ impl<'a, T: Clone> BipBufferReader<'a, T>
     }
 }
 
-pub struct BipBufferWriter<'a, T>
-{
+pub struct BipBufferWriter<'a, T> {
     buffer: *mut BipBuffer<'a, T>,
-    prepared: usize
+    prepared: usize,
 }
 
 unsafe impl<'a, T> core::marker::Send for BipBufferWriter<'a, T> {}
 
-impl<'a, T: Clone> BipBufferWriter<'a, T>
-{
+impl<'a, T: Clone> BipBufferWriter<'a, T> {
     pub fn capacity(&self) -> usize {
         return unsafe { (*self.buffer).capacity() };
     }
     pub fn prepare(&mut self, amount: usize) -> Result<&mut [T], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
-                amount: self.prepared
+                amount: self.prepared,
             });
         }
         let buffer = unsafe { &mut (*self.buffer) };
@@ -157,10 +140,9 @@ impl<'a, T: Clone> BipBufferWriter<'a, T>
             let amount_available_to_end = len - write;
             if amount_available_to_end >= amount {
                 self.prepared = amount;
-                buffer.watermark.store(write+amount, Ordering::SeqCst);
-                return Ok(&mut buffer.buffer[write..write+amount]);
-            }
-            else if read > amount {
+                buffer.watermark.store(write + amount, Ordering::SeqCst);
+                return Ok(&mut buffer.buffer[write..write + amount]);
+            } else if read > amount {
                 // We have room at the start of the buffer,
                 // insert a watermark return [0..amount]
                 buffer.watermark.store(write, Ordering::SeqCst);
@@ -168,29 +150,28 @@ impl<'a, T: Clone> BipBufferWriter<'a, T>
                 return Ok(&mut buffer.buffer[0..amount]);
             }
 
-            return Err(PrepareError::NoRoom{
-                max_available: amount_available_to_end.max(read.saturating_sub(1))
+            return Err(PrepareError::NoRoom {
+                max_available: amount_available_to_end.max(read.saturating_sub(1)),
             });
-        }
-        else {
+        } else {
             // Read leads write, so the only chance is that we have enough
             // room in [write..read-1)
             // for read to lead write read will always be greater than 1
             let available = (read - 1).saturating_sub(write);
             if available < amount {
-                return Err(PrepareError::NoRoom{
-                    max_available: available
+                return Err(PrepareError::NoRoom {
+                    max_available: available,
                 });
             }
             self.prepared = amount;
-            return Ok(&mut buffer.buffer[write..write+amount]);
+            return Ok(&mut buffer.buffer[write..write + amount]);
         }
     }
 
     pub fn prepare_trailing(&mut self) -> Result<&mut [T], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
-                amount: self.prepared
+                amount: self.prepared,
             });
         }
 
@@ -205,26 +186,25 @@ impl<'a, T: Clone> BipBufferWriter<'a, T>
                 // write == len, check if we have room at the beginning of the buffer
                 if read >= 2 {
                     buffer.watermark.store(len, Ordering::SeqCst);
-                    self.prepared = read-1;
-                    return Ok(&mut buffer.buffer[0..read-1]);
+                    self.prepared = read - 1;
+                    return Ok(&mut buffer.buffer[0..read - 1]);
                 }
-                return Err(PrepareError::NoRoom{max_available: 0});
+                return Err(PrepareError::NoRoom { max_available: 0 });
             }
             self.prepared = amount;
             buffer.watermark.store(len, Ordering::SeqCst);
             return Ok(&mut buffer.buffer[write..len]);
-        }
-        else {
+        } else {
             let available = (read - 1).saturating_sub(write);
             self.prepared = available;
-            return Ok(&mut buffer.buffer[write..write+available]);
+            return Ok(&mut buffer.buffer[write..write + available]);
         }
     }
 
     pub fn commit(&mut self, amount: usize) -> Result<usize, CommitError> {
         if self.prepared < amount {
-            return Err(CommitError::NotEnoughPrepared{
-                prepared: self.prepared
+            return Err(CommitError::NotEnoughPrepared {
+                prepared: self.prepared,
             });
         }
 
@@ -240,12 +220,10 @@ impl<'a, T: Clone> BipBufferWriter<'a, T>
             let watermark = buffer.watermark.load(Ordering::SeqCst);
             if watermark == write {
                 amount
-            }
-            else {
+            } else {
                 write + amount
             }
-        }
-        else {
+        } else {
             // We can just adjust write to
             // write+amount
             write + amount
@@ -275,7 +253,7 @@ mod tests {
         let mut buffer = expected;
         let mut bip_buffer = BipBuffer::new(&mut buffer);
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
-        
+
         for x in &expected {
             assert_eq!(reader.values().len(), 0);
 
@@ -283,7 +261,7 @@ mod tests {
             prepared[0] = *x;
             assert_eq!(reader.values().len(), 0);
             assert!(writer.commit(1).is_ok());
-            
+
             let buf = reader.values();
             assert_eq!(buf.len(), 1);
             assert_eq!(buf[0], *x);
@@ -303,10 +281,13 @@ mod tests {
 
         writer.prepare(expected.len()).unwrap();
 
-        assert_eq!(match writer.prepare(1) {
-            Err(PrepareError::UncommitedData{amount}) => amount,
-            _ => 255
-        }, expected.len());
+        assert_eq!(
+            match writer.prepare(1) {
+                Err(PrepareError::UncommitedData { amount }) => amount,
+                _ => 255,
+            },
+            expected.len()
+        );
     }
 
     #[test]
@@ -316,23 +297,25 @@ mod tests {
         let mut bip_buffer = BipBuffer::new(&mut buffer);
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
-
         assert!(writer.prepare(expected.len()).is_ok());
         assert!(writer.commit(expected.len()).is_ok());
         assert_eq!(reader.values().len(), expected.len());
-        assert_eq!(writer.prepare(1).err().unwrap(), PrepareError::NoRoom{max_available: 0});
+        assert_eq!(
+            writer.prepare(1).err().unwrap(),
+            PrepareError::NoRoom { max_available: 0 }
+        );
 
         // Need to consume 2 to leave room for one non-written value
         reader.consume(2).unwrap();
         let buf = writer.prepare(1).unwrap();
         assert_eq!(buf[0], expected[0]);
         writer.commit(1).unwrap();
-        assert_eq!(reader.values().len(), expected.len()-2);
+        assert_eq!(reader.values().len(), expected.len() - 2);
 
-        reader.consume(expected.len()-2).unwrap();
+        reader.consume(expected.len() - 2).unwrap();
         assert_eq!(reader.values().len(), 1);
-        writer.prepare(expected.len()-1).unwrap();
-        writer.commit(expected.len()-1).unwrap();
+        writer.prepare(expected.len() - 1).unwrap();
+        writer.commit(expected.len() - 1).unwrap();
         assert_eq!(reader.values().len(), expected.len());
     }
 
@@ -369,17 +352,17 @@ mod tests {
 
         reader.consume(1).unwrap();
         let buf = reader.values();
-        assert_eq!(buf.len(), expected.len()-1);
+        assert_eq!(buf.len(), expected.len() - 1);
         assert_eq!(*buf, expected[1..]);
 
         reader.consume(1).unwrap();
         let buf = reader.values();
-        assert_eq!(buf.len(), expected.len()-2);
+        assert_eq!(buf.len(), expected.len() - 2);
         assert_eq!(*buf, expected[2..]);
 
         reader.consume(1).unwrap();
         let buf = reader.values();
-        assert_eq!(buf.len(), expected.len()-3);
+        assert_eq!(buf.len(), expected.len() - 3);
         assert_eq!(*buf, expected[3..]);
 
         reader.consume(1).unwrap();

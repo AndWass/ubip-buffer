@@ -5,15 +5,15 @@ use std::time::Duration;
 
 extern crate rand;
 
-use rand::{thread_rng, distributions};
 use distributions::Distribution;
+use rand::{distributions, thread_rng};
 
 fn main() {
-    static mut STORAGE: [i32;13] = [0; 13];
+    static mut STORAGE: [i32; 13] = [0; 13];
     {
         let mut bip_buffer = unsafe { BipBuffer::new(&mut STORAGE) };
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
-        
+
         let producer = thread::spawn(move || {
             let mut produced_values = 0;
             let mut i = 0;
@@ -22,7 +22,7 @@ fn main() {
             let mut rng = thread_rng();
             while produced_values < 300 {
                 let amount_produced = match writer.prepare(dist.sample(&mut rng)) {
-                    Ok(x ) => {
+                    Ok(x) => {
                         let x_len = x.len() as i32;
                         for v in x {
                             *v = i;
@@ -30,8 +30,8 @@ fn main() {
                             i += x_len;
                         }
                         x_len as usize
-                    },
-                    _ => 0
+                    }
+                    _ => 0,
                 };
                 if amount_produced > 0 {
                     writer.commit(amount_produced).unwrap();
