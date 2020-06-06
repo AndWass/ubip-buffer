@@ -2,13 +2,23 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[derive(core::fmt::Debug)]
-pub enum WriteError
+#[derive(core::fmt::Debug, PartialEq)]
+pub enum CommitError
 {
-    SplitRequired{
-        first_size: usize
+    NotEnoughPrepared {
+        prepared: usize
+    }
+}
+
+#[derive(core::fmt::Debug, PartialEq)]
+pub enum PrepareError
+{
+    UncommitedData {
+        amount: usize,
     },
-    NoRoom
+    NoRoom {
+        max_available: usize
+    }
 }
 
 /// A [BipBuffer](https://ferrous-systems.com/blog/lock-free-ring-buffer/) with completely external
@@ -53,7 +63,8 @@ impl<'a, T: Clone> BipBuffer<'a, T>
                 buffer: self
             },
             BipBufferWriter {
-                buffer: self
+                buffer: self,
+                prepared: 0
             })
         );
     }
@@ -119,95 +130,130 @@ impl<'a, T: Clone> BipBufferReader<'a, T>
 
 pub struct BipBufferWriter<'a, T>
 {
-    buffer: *mut BipBuffer<'a, T>
+    buffer: *mut BipBuffer<'a, T>,
+    prepared: usize
 }
 
 unsafe impl<'a, T> core::marker::Send for BipBufferWriter<'a, T> {}
 
 impl<'a, T: Clone> BipBufferWriter<'a, T>
 {
-    fn _store_after_read_write(buffer: &mut BipBuffer<T>, data: &[T], write: usize) {
-        let amount = data.len();
-        let new_watermark = write + amount;
-        buffer.buffer[write..new_watermark].clone_from_slice(data);
-        buffer.watermark.store(new_watermark, Ordering::SeqCst);
-        buffer.write.store(new_watermark, Ordering::SeqCst);
+    pub fn capacity(&self) -> usize {
+        return unsafe { (*self.buffer).capacity() };
     }
-
-    fn _watermark_store_at_start(buffer: &mut BipBuffer<T>, data: &[T], write: usize)
-    {
-        let amount = data.len();
-        buffer.buffer[0..amount].clone_from_slice(data);
-
-        buffer.watermark.store(write, Ordering::SeqCst);
-        buffer.write.store(amount, Ordering::SeqCst);
-    }
-
-    fn _store_between_write_read(buffer: &mut BipBuffer<T>, data: &[T], write: usize)
-    {
-        let amount = data.len();
-        buffer.buffer[write..write+amount].clone_from_slice(data);
-        buffer.write.store(write+amount, Ordering::SeqCst);
-    }
-
-    pub fn produce(&mut self, data: &[T]) -> Result<(), WriteError> {
-        let amount = data.len();
+    pub fn prepare(&mut self, amount: usize) -> Result<&mut [T], PrepareError> {
+        if self.prepared > 0 {
+            return Err(PrepareError::UncommitedData {
+                amount: self.prepared
+            });
+        }
         let buffer = unsafe { &mut (*self.buffer) };
         let len = buffer.buffer.len();
         let write = buffer.write.load(Ordering::SeqCst);
         let read = buffer.read.load(Ordering::SeqCst);
-
         if write >= read {
-            // There must either be room in [write, len)
-            // or in [0, read-1)
-            if len - write >= amount {
-                Self::_store_after_read_write(buffer, data, write);
-                return Ok(());
+            // write leads read, we can either prepare an area at [write, len)
+            // or at [0, read-1)
+            let amount_available_to_end = len - write;
+            if amount_available_to_end >= amount {
+                self.prepared = amount;
+                buffer.watermark.store(write+amount, Ordering::SeqCst);
+                return Ok(&mut buffer.buffer[write..write+amount]);
             }
             else if read > amount {
-                // We do have room in [0, read-1)
-                Self::_watermark_store_at_start(buffer, data, write);
-                return Ok(());
+                // We have room at the start of the buffer,
+                // insert a watermark return [0..amount]
+                buffer.watermark.store(write, Ordering::SeqCst);
+                self.prepared = amount;
+                return Ok(&mut buffer.buffer[0..amount]);
             }
-            
-            if read < 2 {
-                return Err(WriteError::NoRoom);
-            }
-            else {
-                let amount_to_len = len-write;
-                let available_before_read = read-1;
-                if (amount_to_len + available_before_read) < amount {
-                    return Err(WriteError::NoRoom)
-                }
 
-                return Err(WriteError::SplitRequired{
-                    first_size: amount_to_len
+            return Err(PrepareError::NoRoom{
+                max_available: amount_available_to_end.max(read.saturating_sub(1))
+            });
+        }
+        else {
+            // Read leads write, so the only chance is that we have enough
+            // room in [write..read-1)
+            // for read to lead write read will always be greater than 1
+            let available = (read - 1).saturating_sub(write);
+            if available < amount {
+                return Err(PrepareError::NoRoom{
+                    max_available: available
                 });
             }
+            self.prepared = amount;
+            return Ok(&mut buffer.buffer[write..write+amount]);
         }
-        else if (write + amount) < read {
-            // read leads write, so write cannot touch watermark at this point!
-            // but write+amount will still be less than read so we can fit the
-            // the data anyhow.
-            Self::_store_between_write_read(buffer, data, write);
-            return Ok(());
-        }
-
-        // No room!
-        return Err(WriteError::NoRoom);
     }
 
-    pub fn produce_with_split(&mut self, data: &[T]) -> Result<(), WriteError> {
-        match self.produce(data) {
-            Err(WriteError::SplitRequired{
-                first_size, ..
-            }) => {
-                self.produce(&data[0..first_size]).and_then(|_| {
-                    self.produce(&data[first_size..])
-                })
-            },
-            _whatever => _whatever
+    pub fn prepare_trailing(&mut self) -> Result<&mut [T], PrepareError> {
+        if self.prepared > 0 {
+            return Err(PrepareError::UncommitedData {
+                amount: self.prepared
+            });
         }
+
+        let buffer = unsafe { &mut (*self.buffer) };
+        let len = buffer.buffer.len();
+        let write = buffer.write.load(Ordering::SeqCst);
+        let read = buffer.read.load(Ordering::SeqCst);
+        if write >= read {
+            // We want to prepare a buffer going from [write..len)
+            let amount = len - write;
+            if amount == 0 {
+                // write == len, check if we have room at the beginning of the buffer
+                if read >= 2 {
+                    buffer.watermark.store(len, Ordering::SeqCst);
+                    self.prepared = read-1;
+                    return Ok(&mut buffer.buffer[0..read-1]);
+                }
+                return Err(PrepareError::NoRoom{max_available: 0});
+            }
+            self.prepared = amount;
+            buffer.watermark.store(len, Ordering::SeqCst);
+            return Ok(&mut buffer.buffer[write..len]);
+        }
+        else {
+            let available = (read - 1).saturating_sub(write);
+            self.prepared = available;
+            return Ok(&mut buffer.buffer[write..write+available]);
+        }
+    }
+
+    pub fn commit(&mut self, amount: usize) -> Result<usize, CommitError> {
+        if self.prepared < amount {
+            return Err(CommitError::NotEnoughPrepared{
+                prepared: self.prepared
+            });
+        }
+
+        let buffer = unsafe { &mut (*self.buffer) };
+        let write = buffer.write.load(Ordering::SeqCst);
+        let read = buffer.read.load(Ordering::SeqCst);
+
+        self.prepared -= amount;
+
+        let new_write = if write >= read {
+            // We need to ajdust write to
+            // write + amount % watermark
+            let watermark = buffer.watermark.load(Ordering::SeqCst);
+            if watermark == write {
+                amount
+            }
+            else {
+                write + amount
+            }
+        }
+        else {
+            // We can just adjust write to
+            // write+amount
+            write + amount
+        };
+
+        buffer.write.store(new_write, Ordering::SeqCst);
+
+        return Ok(self.prepared);
     }
 }
 
@@ -233,7 +279,11 @@ mod tests {
         for x in &expected {
             assert_eq!(reader.values().len(), 0);
 
-            assert!(writer.produce(&[*x]).is_ok());
+            let prepared = writer.prepare(1).unwrap();
+            prepared[0] = *x;
+            assert_eq!(reader.values().len(), 0);
+            assert!(writer.commit(1).is_ok());
+            
             let buf = reader.values();
             assert_eq!(buf.len(), 1);
             assert_eq!(buf[0], *x);
@@ -245,66 +295,45 @@ mod tests {
     }
 
     #[test]
-    fn cannot_produce_more_than_buffer_size() {
+    fn cannot_prepare_more_than_once() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
         let mut bip_buffer = BipBuffer::new(&mut buffer);
         let (mut _reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
-        assert!(writer.produce(&expected).is_ok());
 
-        assert!(match writer.produce(&[1]) {
-            Err(WriteError::NoRoom) => true,
-            _ => false
-        });
+        writer.prepare(expected.len()).unwrap();
+
+        assert_eq!(match writer.prepare(1) {
+            Err(PrepareError::UncommitedData{amount}) => amount,
+            _ => 255
+        }, expected.len());
     }
 
     #[test]
-    fn produce_at_start_after_consume() {
+    fn prepare_wraps() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
         let mut bip_buffer = BipBuffer::new(&mut buffer);
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
-        assert!(writer.produce(&expected).is_ok());
-        assert!(match writer.produce(&[1]) {
-            Err(WriteError::NoRoom) => true,
-            _ => false
-        });
+
+        assert!(writer.prepare(expected.len()).is_ok());
+        assert!(writer.commit(expected.len()).is_ok());
         assert_eq!(reader.values().len(), expected.len());
+        assert_eq!(writer.prepare(1).err().unwrap(), PrepareError::NoRoom{max_available: 0});
 
         // Need to consume 2 to leave room for one non-written value
         reader.consume(2).unwrap();
-        assert!(writer.produce(&[1]).is_ok());
+        let buf = writer.prepare(1).unwrap();
+        assert_eq!(buf[0], expected[0]);
+        writer.commit(1).unwrap();
         assert_eq!(reader.values().len(), expected.len()-2);
-
-        assert!(match writer.produce(&[1]) {
-            Err(WriteError::NoRoom) => true,
-            _ => false
-        });
 
         reader.consume(expected.len()-2).unwrap();
         assert_eq!(reader.values().len(), 1);
-        assert!(writer.produce(&expected[0..expected.len()-1]).is_ok());
+        writer.prepare(expected.len()-1).unwrap();
+        writer.commit(expected.len()-1).unwrap();
         assert_eq!(reader.values().len(), expected.len());
-    }
-
-    #[test]
-    fn require_split() {
-        let expected = [10, 20, 30, 40, 50];
-        let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
-        let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
-
-        writer.produce(&expected[0..4]).unwrap();
-        reader.consume(3).unwrap();
-        assert!(match writer.produce(&expected[0..3]) {
-            Err(WriteError::SplitRequired{
-                first_size
-            }) => first_size == 1,
-            _ => false
-        });
-
-        assert!(writer.produce_with_split(&expected[0..3]).is_ok());
     }
 
     #[test]
@@ -314,9 +343,11 @@ mod tests {
         let mut bip_buffer = BipBuffer::new(&mut buffer);
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
-        assert!(writer.produce(&expected[0..4]).is_ok());
+        assert!(writer.prepare(4).is_ok());
+        writer.commit(4).unwrap();
         reader.consume(4).unwrap();
-        assert!(writer.produce(&expected[0..2]).is_ok());
+        assert!(writer.prepare(2).is_ok());
+        writer.commit(2).unwrap();
         assert_eq!(reader.values().len(), 2);
         assert_eq!(*reader.values(), expected[0..2]);
     }
@@ -330,7 +361,8 @@ mod tests {
 
         assert_eq!(reader.values().len(), 0);
 
-        assert!(writer.produce(&expected).is_ok());
+        assert!(writer.prepare(expected.len()).is_ok());
+        writer.commit(expected.len()).unwrap();
         let buf = reader.values();
         assert_eq!(buf.len(), expected.len());
         assert_eq!(*buf, expected);
