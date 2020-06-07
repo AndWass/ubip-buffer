@@ -1,3 +1,9 @@
+
+//          Copyright Andreas Wass 2004 - 2020.
+// Distributed under the Boost Software License, Version 1.0.
+//    (See accompanying file LICENSE or copy at
+//          https://www.boost.org/LICENSE_1_0.txt)
+
 use ubip_buffer::BipBuffer;
 
 use std::thread;
@@ -41,6 +47,7 @@ fn main() {
         println!("Produced {} values", produced_values);
         println!("Produced sum = {}", produced_sum);
     });
+
     let mut num_values_sum = 0usize;
     let mut consumed_sum = 0;
     for _i in 0..150 {
