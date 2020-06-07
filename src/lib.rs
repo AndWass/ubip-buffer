@@ -13,10 +13,19 @@ pub enum PrepareError {
     NoRoom { max_available: usize },
 }
 
-/// A [BipBuffer](https://ferrous-systems.com/blog/lock-free-ring-buffer/) with completely external
-/// storage.
+/// A SPSC [BipBuffer](https://ferrous-systems.com/blog/lock-free-ring-buffer/) with external storage.
 ///
-/// The user has complete control over the storage, if it's dynamically allocated or statically.
+/// The BipBuffer itself only provides access to a reader and a writer handle, which provides
+/// the actual access.
+///
+/// The BipBuffer object must be kept alive for as long as a reader or writer
+/// is used.
+///
+/// Both readers and writers implement `Send` so they can be sent to a secondary thread.
+///
+/// # Requirements
+///
+/// * `T` must implement `Clone`.
 pub struct BipBuffer<'a, T> {
     buffer: &'a mut [T],
     watermark: AtomicUsize,
@@ -32,6 +41,11 @@ impl<'a, T> BipBuffer<'a, T> {
 }
 
 impl<'a, T: Clone> BipBuffer<'a, T> {
+    /// Construct a new BipBuffer from an external buffer
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - The backing storage for the buffer.
     pub fn new(buffer: &'a mut [T]) -> Self {
         BipBuffer {
             buffer: buffer,
@@ -42,6 +56,10 @@ impl<'a, T: Clone> BipBuffer<'a, T> {
         }
     }
 
+    /// Take readers and writers from the buffer
+    ///
+    /// This is a one-shot function, any subsequent calls to this function
+    /// will return `None`.
     pub fn take_reader_writer(
         &mut self,
     ) -> Option<(BipBufferReader<'a, T>, BipBufferWriter<'a, T>)> {
@@ -59,6 +77,31 @@ impl<'a, T: Clone> BipBuffer<'a, T> {
     }
 }
 
+/// The reader handle into a `BipBuffer`
+///
+/// Values are read and consumed, making parts of the buffer
+/// available for writing again.
+///
+/// Values are fetched using the `values()` function.
+/// Unconsumed values will always be available in any
+/// second calls to `values()`.
+///
+/// # Example
+/// ```
+/// let mut buffer = [0; 10];
+/// let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+/// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+/// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
+/// writer.commit(3).unwrap();
+/// assert_eq!(reader.values(), [1,2,3]);
+/// // reader.values() will always start with [1, 2, 3] until some values are consumed
+/// reader.consume(1);
+/// assert_eq!(reader.values(), [2,3]);
+/// // Commited values may appear in calls to values()
+/// writer.prepare(1).unwrap()[0] = 4;
+/// writer.commit(1);
+/// assert_eq!(reader.values(), [2,3,4]);
+/// ```
 pub struct BipBufferReader<'a, T> {
     buffer: *mut BipBuffer<'a, T>,
 }
@@ -66,6 +109,13 @@ pub struct BipBufferReader<'a, T> {
 unsafe impl<'a, T> core::marker::Send for BipBufferReader<'a, T> {}
 
 impl<'a, T: Clone> BipBufferReader<'a, T> {
+    /// Gets a reference to a committed slice of data.
+    ///
+    /// It might be necessary to read values and consume them
+    /// multiple times to read all values in the underlying
+    /// buffer.
+    ///
+    /// Call to `self.consume()` to ensure that new values are read.
     pub fn values(&self) -> &'a [T] {
         let buffer = unsafe { &(*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
@@ -86,6 +136,22 @@ impl<'a, T: Clone> BipBufferReader<'a, T> {
         }
     }
 
+    /// Consume processed values.
+    ///
+    /// Consuming values frees up buffer space for writing new values,
+    /// and ensures that any consumed values are removed from the start
+    /// of the slice returned by `values()`
+    ///
+    /// Only consume up to the last known amount of values returned from `values()`
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The number of values to consume.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if `amount` values were consumed, otherwise the maximum number of values that could be
+    /// consumed when this function was called.
     pub fn consume(&mut self, amount: usize) -> Result<(), usize> {
         let buffer = unsafe { &mut (*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
@@ -113,17 +179,64 @@ impl<'a, T: Clone> BipBufferReader<'a, T> {
     }
 }
 
+/// The writer handle into a `BipBuffer`
+///
+/// A write operation is done in two parts:
+///
+/// 1. Prepare a buffer area for writing. A successful prepare
+/// returns a mutable slice to the internal buffer.
+///
+/// 2. Commiting of finished data. This allows the data to be written.
+///
+/// A prepared area can be commited in parts or completely in one go, but
+/// must be commited from the start of the prepared area.
+///
+/// ```
+/// let mut buffer = [0; 10];
+/// let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+/// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+/// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
+/// assert_eq!(reader.values(), []);
+/// writer.commit(1).unwrap();
+/// assert_eq!(reader.values(), [1]);
+/// writer.commit(1).unwrap();
+/// assert_eq!(reader.values(), [1, 2]);
+/// writer.commit(1).unwrap();
+/// assert_eq!(reader.values(), [1, 2, 3]);
+/// ```
 pub struct BipBufferWriter<'a, T> {
     buffer: *mut BipBuffer<'a, T>,
     prepared: usize,
 }
 
-unsafe impl<'a, T> core::marker::Send for BipBufferWriter<'a, T> {}
-
-impl<'a, T: Clone> BipBufferWriter<'a, T> {
+impl<'a, T> BipBufferWriter<'a, T> {
+    /// Returns the total capacity of the `BipBuffer`
+    ///
+    /// This is usually not that useful, depending on where the read pointer is
+    /// located only parts of the total capacity is availabe.
     pub fn capacity(&self) -> usize {
         return unsafe { (*self.buffer).capacity() };
     }
+}
+
+unsafe impl<'a, T> core::marker::Send for BipBufferWriter<'a, T> {}
+
+impl<'a, T: Clone> BipBufferWriter<'a, T> {
+    /// Try to prepare a set amount of data for commitment.
+    ///
+    /// Depending on the current state of the `BipBuffer`, data can
+    /// either be sliced from `[write, len)`, `[0, read-1)` or `[write, read-1)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The number of elements requested.
+    ///
+    /// # Returns
+    ///
+    /// ## Success
+    ///
+    /// A slice to the internal buffer with `len()` equal to `amount`. This should be written to
+    /// and commited after the buffer is done.
     pub fn prepare(&mut self, amount: usize) -> Result<&mut [T], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
@@ -168,6 +281,22 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
         }
     }
 
+    /// Prepares and returns any part of the buffer trailing the write pointer.
+    ///
+    /// If the layout of the BipBuffer is
+    /// ```ignored
+    /// |--read---write------len|
+    /// ```
+    /// then the slice `[write, len)` will be prepared and returned.
+    ///
+    /// If the layout of the BipBuffer is
+    /// ```ignored
+    /// |--write----read------len|
+    /// ```
+    /// then the slice `[write, read-1)` will be returned (given that `read-1-write > 1` holds)
+    ///
+    /// If `write == len` and `read >= 2` then the slice `[0, read-1)`
+    /// will be returned.
     pub fn prepare_trailing(&mut self) -> Result<&mut [T], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
@@ -196,16 +325,74 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
             return Ok(&mut buffer.buffer[write..len]);
         } else {
             let available = (read - 1).saturating_sub(write);
+            if available == 0 {
+                return Err(PrepareError::NoRoom { max_available: 0 });
+            }
             self.prepared = available;
             return Ok(&mut buffer.buffer[write..write + available]);
         }
     }
 
+    /// Prepares and returns the biggest slice of continues data available.
+    ///
+    /// Depending on the state of the buffer this is either located
+    /// at `[write, len)`, `[0, read-1)` or `[write, read-1)`
+    pub fn prepare_max(&mut self) -> Result<&mut [T], PrepareError> {
+        if self.prepared > 0 {
+            return Err(PrepareError::UncommitedData {
+                amount: self.prepared,
+            });
+        }
+
+        let buffer = unsafe { &mut (*self.buffer) };
+        let len = buffer.buffer.len();
+        let write = buffer.write.load(Ordering::SeqCst);
+        let read = buffer.read.load(Ordering::SeqCst);
+
+        if write >= read {
+            let available_before_read = read.saturating_sub(1);
+            let available_before_len = len - write;
+            if available_before_len >= available_before_read {
+                if available_before_len > 0 {
+                    buffer.watermark.store(len, Ordering::SeqCst);
+                    self.prepared = available_before_len;
+                    return Ok(&mut buffer.buffer[write..len]);
+                }
+                return Err(PrepareError::NoRoom { max_available: 0 });
+            } else {
+                buffer.watermark.store(write, Ordering::SeqCst);
+                self.prepared = available_before_read;
+                return Ok(&mut buffer.buffer[0..available_before_read]);
+            }
+        } else {
+            let available = (read - 1).saturating_sub(write);
+            if available >= 1 {
+                self.prepared = available;
+                return Ok(&mut buffer.buffer[write..write + available]);
+            }
+        }
+
+        return Err(PrepareError::NoRoom { max_available: 0 });
+    }
+
+    /// Commits a previsouly prepared part of data.
+    ///
+    /// Commiting data immediately makes the data available for reading.
+    ///
+    /// All data must be commited before new data can be prepared.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The number of elements to commit.
     pub fn commit(&mut self, amount: usize) -> Result<usize, CommitError> {
         if self.prepared < amount {
             return Err(CommitError::NotEnoughPrepared {
                 prepared: self.prepared,
             });
+        }
+
+        if amount == 0 {
+            return Ok(self.prepared);
         }
 
         let buffer = unsafe { &mut (*self.buffer) };
@@ -368,5 +555,60 @@ mod tests {
         reader.consume(1).unwrap();
         let buf = reader.values();
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn prepare_max() {
+        let expected = [10, 20, 30, 40, 50];
+        let mut buffer = expected;
+        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+
+        let expect_all = writer.prepare_max().unwrap().len();
+        assert_eq!(expect_all, expected.len());
+        writer.commit(expect_all).unwrap();
+        reader.consume(expect_all).unwrap();
+
+        let expect_before_read = writer.prepare_max().unwrap().len();
+        assert_eq!(expect_before_read, writer.capacity() - 1);
+        writer.commit(expect_before_read).unwrap();
+        reader.consume(expect_before_read).unwrap();
+
+        let prepared = writer.prepare_trailing().unwrap().len();
+        writer.commit(prepared).unwrap();
+        reader.consume(prepared).unwrap();
+
+        // Prepare 4 elements to move write to index_of(40), then consume 4 elements
+        // this moves read to index_of(40) as well, then prepare max which should set watermark to index_of(40)
+        // and give [0..3]
+        writer.prepare(4).unwrap();
+        writer.commit(4).unwrap();
+        reader.consume(4).unwrap();
+
+        let prepared = writer.prepare_max().unwrap();
+        let prepared_len = prepared.len();
+        assert_eq!(prepared.len(), 3);
+        assert_eq!(prepared[0], 10);
+        writer.commit(prepared_len).unwrap();
+
+        let read = reader.values();
+        assert_eq!(read.len(), 3);
+        assert_eq!(read[0], 10);
+        reader.consume(3).unwrap();
+
+        let rest = writer.prepare_trailing().unwrap().len();
+        writer.commit(rest).unwrap();
+        let rest = writer.prepare(1).unwrap();
+        let rest_len = rest.len();
+        assert_eq!(rest[0], 10);
+        writer.commit(rest_len).unwrap();
+
+        assert_eq!(reader.values()[0], 40);
+        assert_eq!(reader.values().len(), 2);
+
+        let rest = writer.prepare_max().unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0], 20);
+        writer.commit(1).unwrap();
     }
 }
