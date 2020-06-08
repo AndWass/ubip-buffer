@@ -426,6 +426,37 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
 
         return Ok(self.prepared);
     }
+
+    /// Discards uncommited but prepared data.
+    ///
+    /// After discard it is safe to prepare a new area for writing.
+    ///
+    /// # Returns
+    ///
+    /// The number of elements that were discarded.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let mut buffer = [0; 10];
+    /// let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+    /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+    /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
+    /// assert_eq!(reader.values(), []);
+    /// writer.commit(1).unwrap();
+    /// assert_eq!(reader.values(), [1]);
+    /// assert!(writer.prepare(1).is_err());
+    /// assert_eq!(writer.discard(), 2);
+    /// assert_eq!(reader.values(), [1]);
+    /// let to_write = writer.prepare(2).unwrap();
+    /// // This was written but discarded previously
+    /// assert_eq!(to_write[0], 2);
+    /// ```
+    pub fn discard(&mut self) -> usize {
+        let retval = self.prepared;
+        self.prepared = 0;
+        return retval;
+    }
 }
 
 mod tests {
@@ -616,5 +647,20 @@ mod tests {
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0], 20);
         writer.commit(1).unwrap();
+    }
+
+    #[test]
+    fn discard_write_resets_writer() {
+        let expected = [10, 20, 30, 40, 50];
+        let mut buffer = expected;
+        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let (reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+
+        assert_eq!(reader.values(), []);
+        let prepared = writer.prepare(2).unwrap();
+        assert_eq!(prepared[0], 10);
+        prepared[0] = 1;
+        writer.commit(1).unwrap();
+        assert_eq!(writer.discard(), 1);
     }
 }
