@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["CommitError",""],["PrepareError",""]],"struct":[["BipBuffer","A SPSC BipBuffer with external storage."],["BipBufferReader","The reader handle into a `BipBuffer`"],["BipBufferWriter","The writer handle into a `BipBuffer`"],["StorageRef",""],["UnsafeStorageRef",""]],"trait":[["Storage","Trait used by BipBuffers to reference storage."]]});
