@@ -1,4 +1,3 @@
-
 //          Copyright Andreas Wass 2004 - 2020.
 // Distributed under the Boost Software License, Version 1.0.
 //    (See accompanying file LICENSE or copy at
@@ -90,19 +89,26 @@ pub trait Storage<T> {
     fn len(&self) -> usize;
 }
 
-pub struct StorageRef<'a, T> where T: Clone {
-    buffer: &'a mut [T]
+pub struct StorageRef<'a, T>
+where
+    T: Clone,
+{
+    buffer: &'a mut [T],
 }
 
-impl<'a, T> StorageRef<'a, T> where T: Clone {
+impl<'a, T> StorageRef<'a, T>
+where
+    T: Clone,
+{
     pub fn new(buffer: &'a mut [T]) -> Self {
-        Self {
-            buffer: buffer
-        }
+        Self { buffer: buffer }
     }
 }
 
-impl<'a, T> Storage<T> for StorageRef<'a, T> where T: Clone {
+impl<'a, T> Storage<T> for StorageRef<'a, T>
+where
+    T: Clone,
+{
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         &self.buffer[range.start..range.end]
     }
@@ -114,23 +120,32 @@ impl<'a, T> Storage<T> for StorageRef<'a, T> where T: Clone {
     }
 }
 
-pub struct UnsafeStorageRef<'a, T> where T: Clone {
+pub struct UnsafeStorageRef<'a, T>
+where
+    T: Clone,
+{
     buffer: *mut T,
     len: usize,
-    _phantom: core::marker::PhantomData<&'a T>
+    _phantom: core::marker::PhantomData<&'a T>,
 }
 
-impl<'a, T> UnsafeStorageRef<'a, T> where T: Clone {
+impl<'a, T> UnsafeStorageRef<'a, T>
+where
+    T: Clone,
+{
     pub fn new(buffer: &mut [T]) -> Self {
         Self {
             buffer: buffer.as_mut_ptr(),
             len: buffer.len(),
-            _phantom: core::marker::PhantomData
+            _phantom: core::marker::PhantomData,
         }
     }
 }
 
-impl<'a, T> Storage<T> for UnsafeStorageRef<'a, T> where T: Clone {
+impl<'a, T> Storage<T> for UnsafeStorageRef<'a, T>
+where
+    T: Clone,
+{
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.buffer.add(range.start), range.len()) }
     }
@@ -155,7 +170,10 @@ impl<'a, T> Storage<T> for UnsafeStorageRef<'a, T> where T: Clone {
 /// # Requirements
 ///
 /// * `T` must implement `Clone`.
-pub struct BipBuffer<'a, T, St> where St: Storage<T> {
+pub struct BipBuffer<'a, T, St>
+where
+    St: Storage<T>,
+{
     buffer: St,
     watermark: AtomicUsize,
     read: AtomicUsize,
@@ -164,13 +182,20 @@ pub struct BipBuffer<'a, T, St> where St: Storage<T> {
     _phantom: core::marker::PhantomData<&'a T>,
 }
 
-impl<'a, T, St> BipBuffer<'a, T, St> where St: Storage<T> {
+impl<'a, T, St> BipBuffer<'a, T, St>
+where
+    St: Storage<T>,
+{
     pub fn capacity(&self) -> usize {
         return self.buffer.len();
     }
 }
 
-impl<'a, T, St> BipBuffer<'a, T, St> where St: Storage<T>, T: Clone {
+impl<'a, T, St> BipBuffer<'a, T, St>
+where
+    St: Storage<T>,
+    T: Clone,
+{
     /// Construct a new BipBuffer from an external buffer
     ///
     /// # Arguments
@@ -183,7 +208,7 @@ impl<'a, T, St> BipBuffer<'a, T, St> where St: Storage<T>, T: Clone {
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
             rw_taken: false,
-            _phantom: core::marker::PhantomData
+            _phantom: core::marker::PhantomData,
         }
     }
 
@@ -234,13 +259,19 @@ impl<'a, T, St> BipBuffer<'a, T, St> where St: Storage<T>, T: Clone {
 /// writer.commit(1);
 /// assert_eq!(reader.values(), [2,3,4]);
 /// ```
-pub struct BipBufferReader<'a, T, St> where St: Storage<T> {
+pub struct BipBufferReader<'a, T, St>
+where
+    St: Storage<T>,
+{
     buffer: *mut BipBuffer<'a, T, St>,
 }
 
 unsafe impl<'a, T, St> core::marker::Send for BipBufferReader<'a, T, St> where St: Storage<T> {}
 
-impl<'a, T, St> BipBufferReader<'a, T, St> where St: Storage<T> {
+impl<'a, T, St> BipBufferReader<'a, T, St>
+where
+    St: Storage<T>,
+{
     /// Gets a reference to a committed slice of data.
     ///
     /// It might be necessary to read values and consume them
@@ -337,12 +368,18 @@ impl<'a, T, St> BipBufferReader<'a, T, St> where St: Storage<T> {
 /// writer.commit(1).unwrap();
 /// assert_eq!(reader.values(), [1, 2, 3]);
 /// ```
-pub struct BipBufferWriter<'a, T, St> where St: Storage<T> {
+pub struct BipBufferWriter<'a, T, St>
+where
+    St: Storage<T>,
+{
     buffer: *mut BipBuffer<'a, T, St>,
     prepared: usize,
 }
 
-impl<'a, T, St> BipBufferWriter<'a, T, St> where St: Storage<T> {
+impl<'a, T, St> BipBufferWriter<'a, T, St>
+where
+    St: Storage<T>,
+{
     /// Returns the total capacity of the `BipBuffer`
     ///
     /// This is usually not that useful, depending on where the read pointer is
@@ -354,7 +391,10 @@ impl<'a, T, St> BipBufferWriter<'a, T, St> where St: Storage<T> {
 
 unsafe impl<'a, T, St> core::marker::Send for BipBufferWriter<'a, T, St> where St: Storage<T> {}
 
-impl<'a, T, St> BipBufferWriter<'a, T, St> where St: Storage<T> {
+impl<'a, T, St> BipBufferWriter<'a, T, St>
+where
+    St: Storage<T>,
+{
     /// Try to prepare a set amount of data for commitment.
     ///
     /// Depending on the current state of the `BipBuffer`, data can
