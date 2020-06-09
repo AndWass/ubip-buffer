@@ -20,7 +20,7 @@
 //! ```
 //! # use ubip_buffer::*;
 //! let mut buffer = [0; 10];
-//! let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+//! let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
 //! let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 //! let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 //! writer.commit(3).unwrap();
@@ -59,7 +59,7 @@ pub enum PrepareError {
 /// struct MyCustomStorage {
 ///     storage: [i32; 32]
 /// }
-/// impl StorageRef<i32> for MyCustomStorage {
+/// impl Storage<i32> for MyCustomStorage {
 ///     fn slice(&self, range: core::ops::Range<usize>) -> &[i32] {
 ///         &self.storage[range.start..range.end]
 ///     }
@@ -81,7 +81,7 @@ pub enum PrepareError {
 /// writer.commit(1);
 /// assert_eq!(reader.values(), [2,3,4]);
 /// ```
-pub trait StorageRef<T> {
+pub trait Storage<T> {
     /// Provides a slice over the specified range.
     fn slice(&self, range: core::ops::Range<usize>) -> &[T];
     /// Provides a mutable slice over the specified range.
@@ -90,11 +90,11 @@ pub trait StorageRef<T> {
     fn len(&self) -> usize;
 }
 
-pub struct SafeStorageRef<'a, T> {
+pub struct StorageRef<'a, T> where T: Clone {
     buffer: &'a mut [T]
 }
 
-impl<'a, T> SafeStorageRef<'a, T> {
+impl<'a, T> StorageRef<'a, T> where T: Clone {
     pub fn new(buffer: &'a mut [T]) -> Self {
         Self {
             buffer: buffer
@@ -102,7 +102,7 @@ impl<'a, T> SafeStorageRef<'a, T> {
     }
 }
 
-impl<'a, T> StorageRef<T> for SafeStorageRef<'a, T> {
+impl<'a, T> Storage<T> for StorageRef<'a, T> where T: Clone {
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         &self.buffer[range.start..range.end]
     }
@@ -114,13 +114,13 @@ impl<'a, T> StorageRef<T> for SafeStorageRef<'a, T> {
     }
 }
 
-pub struct UnsafeStorageRef<'a, T> {
+pub struct UnsafeStorageRef<'a, T> where T: Clone {
     buffer: *mut T,
     len: usize,
     _phantom: core::marker::PhantomData<&'a T>
 }
 
-impl<'a, T> UnsafeStorageRef<'a, T> {
+impl<'a, T> UnsafeStorageRef<'a, T> where T: Clone {
     pub fn new(buffer: &mut [T]) -> Self {
         Self {
             buffer: buffer.as_mut_ptr(),
@@ -130,7 +130,7 @@ impl<'a, T> UnsafeStorageRef<'a, T> {
     }
 }
 
-impl<'a, T> StorageRef<T> for UnsafeStorageRef<'a, T> {
+impl<'a, T> Storage<T> for UnsafeStorageRef<'a, T> where T: Clone {
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.buffer.add(range.start), range.len()) }
     }
@@ -155,7 +155,7 @@ impl<'a, T> StorageRef<T> for UnsafeStorageRef<'a, T> {
 /// # Requirements
 ///
 /// * `T` must implement `Clone`.
-pub struct BipBuffer<'a, T, St> where St: StorageRef<T> {
+pub struct BipBuffer<'a, T, St> where St: Storage<T> {
     buffer: St,
     watermark: AtomicUsize,
     read: AtomicUsize,
@@ -164,13 +164,13 @@ pub struct BipBuffer<'a, T, St> where St: StorageRef<T> {
     _phantom: core::marker::PhantomData<&'a T>,
 }
 
-impl<'a, T, St> BipBuffer<'a, T, St> where St: StorageRef<T> {
+impl<'a, T, St> BipBuffer<'a, T, St> where St: Storage<T> {
     pub fn capacity(&self) -> usize {
         return self.buffer.len();
     }
 }
 
-impl<'a, T: Clone, St> BipBuffer<'a, T, St> where St: StorageRef<T> {
+impl<'a, T, St> BipBuffer<'a, T, St> where St: Storage<T>, T: Clone {
     /// Construct a new BipBuffer from an external buffer
     ///
     /// # Arguments
@@ -221,7 +221,7 @@ impl<'a, T: Clone, St> BipBuffer<'a, T, St> where St: StorageRef<T> {
 /// ```
 /// # use ubip_buffer::*;
 /// let mut buffer = [0; 10];
-/// let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+/// let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
 /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 /// writer.commit(3).unwrap();
@@ -234,13 +234,13 @@ impl<'a, T: Clone, St> BipBuffer<'a, T, St> where St: StorageRef<T> {
 /// writer.commit(1);
 /// assert_eq!(reader.values(), [2,3,4]);
 /// ```
-pub struct BipBufferReader<'a, T, St> where St: StorageRef<T> {
+pub struct BipBufferReader<'a, T, St> where St: Storage<T> {
     buffer: *mut BipBuffer<'a, T, St>,
 }
 
-unsafe impl<'a, T, St: StorageRef<T>> core::marker::Send for BipBufferReader<'a, T, St> {}
+unsafe impl<'a, T, St> core::marker::Send for BipBufferReader<'a, T, St> where St: Storage<T> {}
 
-impl<'a, T: Clone, St> BipBufferReader<'a, T, St> where St: StorageRef<T> {
+impl<'a, T, St> BipBufferReader<'a, T, St> where St: Storage<T> {
     /// Gets a reference to a committed slice of data.
     ///
     /// It might be necessary to read values and consume them
@@ -326,7 +326,7 @@ impl<'a, T: Clone, St> BipBufferReader<'a, T, St> where St: StorageRef<T> {
 /// ```
 /// # use ubip_buffer::*;
 /// let mut buffer = [0; 10];
-/// let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+/// let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
 /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 /// assert_eq!(reader.values(), []);
@@ -337,12 +337,12 @@ impl<'a, T: Clone, St> BipBufferReader<'a, T, St> where St: StorageRef<T> {
 /// writer.commit(1).unwrap();
 /// assert_eq!(reader.values(), [1, 2, 3]);
 /// ```
-pub struct BipBufferWriter<'a, T, St> where St: StorageRef<T> {
+pub struct BipBufferWriter<'a, T, St> where St: Storage<T> {
     buffer: *mut BipBuffer<'a, T, St>,
     prepared: usize,
 }
 
-impl<'a, T, St> BipBufferWriter<'a, T, St> where St: StorageRef<T> {
+impl<'a, T, St> BipBufferWriter<'a, T, St> where St: Storage<T> {
     /// Returns the total capacity of the `BipBuffer`
     ///
     /// This is usually not that useful, depending on where the read pointer is
@@ -352,9 +352,9 @@ impl<'a, T, St> BipBufferWriter<'a, T, St> where St: StorageRef<T> {
     }
 }
 
-unsafe impl<'a, T, St> core::marker::Send for BipBufferWriter<'a, T, St> where St: StorageRef<T> {}
+unsafe impl<'a, T, St> core::marker::Send for BipBufferWriter<'a, T, St> where St: Storage<T> {}
 
-impl<'a, T: Clone, St> BipBufferWriter<'a, T, St> where St: StorageRef<T> {
+impl<'a, T, St> BipBufferWriter<'a, T, St> where St: Storage<T> {
     /// Try to prepare a set amount of data for commitment.
     ///
     /// Depending on the current state of the `BipBuffer`, data can
@@ -567,7 +567,7 @@ impl<'a, T: Clone, St> BipBufferWriter<'a, T, St> where St: StorageRef<T> {
     /// ```
     /// # use ubip_buffer::*;
     /// let mut buffer = [0; 10];
-    /// let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+    /// let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
     /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
     /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
     /// assert_eq!(reader.values(), []);
@@ -595,7 +595,7 @@ mod tests {
     fn singleton_reader_writer() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (_, _) = bip_buffer.take_reader_writer().unwrap();
         assert!(bip_buffer.take_reader_writer().is_none());
     }
@@ -603,7 +603,7 @@ mod tests {
     fn single_produce_consume() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         for x in &expected {
@@ -628,7 +628,7 @@ mod tests {
     fn cannot_prepare_more_than_once() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (mut _reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         writer.prepare(expected.len()).unwrap();
@@ -646,7 +646,7 @@ mod tests {
     fn prepare_wraps() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert!(writer.prepare(expected.len()).is_ok());
@@ -675,7 +675,7 @@ mod tests {
     fn insert_watermark() {
         let expected = [10, 20, 30, 40, 50];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert!(writer.prepare(4).is_ok());
@@ -691,7 +691,7 @@ mod tests {
     fn single_produce_multi_consume() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert_eq!(reader.values().len(), 0);
@@ -726,7 +726,7 @@ mod tests {
     fn prepare_max() {
         let expected = [10, 20, 30, 40, 50];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         let expect_all = writer.prepare_max().unwrap().len();
@@ -781,7 +781,7 @@ mod tests {
     fn discard_write_resets_writer() {
         let expected = [10, 20, 30, 40, 50];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
         let (reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert_eq!(reader.values(), []);

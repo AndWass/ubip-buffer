@@ -4,7 +4,7 @@
 //    (See accompanying file LICENSE or copy at
 //          https://www.boost.org/LICENSE_1_0.txt)
 
-use ubip_buffer::{BipBuffer, /*UnsafeStorageRef*/ SafeStorageRef};
+use ubip_buffer::{BipBuffer, /*UnsafeStorageRef*/ StorageRef};
 
 use std::thread;
 use std::time::Duration;
@@ -15,9 +15,10 @@ use distributions::Distribution;
 use rand::{distributions, thread_rng};
 
 fn main() {
-    // If we use UnsafeStorageRef instead of SafeStorageRef then STORAGE does not have to be static.
+    // If we use UnsafeStorageRef instead of StorageRef then STORAGE does not have to be static.
+    // but we get extra borrow-checker safety this way.
     static mut STORAGE: [i32; 13] = [0; 13];
-    let mut bip_buffer = BipBuffer::new(unsafe { SafeStorageRef::new(&mut STORAGE) });
+    let mut bip_buffer = BipBuffer::new(unsafe { StorageRef::new(&mut STORAGE) });
 
     // Unsafe demo:
     //let mut storage = [0; 13];

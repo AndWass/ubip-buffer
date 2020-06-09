@@ -13,7 +13,7 @@ after data is consumed it is again made available for writing.
 
 ```rust
 let mut buffer = [0; 10];
-let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
 let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 writer.commit(3).unwrap();
