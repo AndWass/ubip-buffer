@@ -18,8 +18,9 @@
 //! # Example
 //!
 //! ```
+//! # use ubip_buffer::*;
 //! let mut buffer = [0; 10];
-//! let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+//! let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
 //! let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 //! let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 //! writer.commit(3).unwrap();
@@ -46,6 +47,101 @@ pub enum PrepareError {
     NoRoom { max_available: usize },
 }
 
+/// Trait used by BipBuffers to reference storage.
+///
+/// This trait can be implemented by custom types to provide
+/// custom storage schemas.
+///
+/// # Example
+///
+/// ```
+/// # use ubip_buffer::*;
+/// struct MyCustomStorage {
+///     storage: [i32; 32]
+/// }
+/// impl StorageRef<i32> for MyCustomStorage {
+///     fn slice(&self, range: core::ops::Range<usize>) -> &[i32] {
+///         &self.storage[range.start..range.end]
+///     }
+///     fn mut_slice(&mut self, range: core::ops::Range<usize>) -> &mut [i32] {
+///         &mut self.storage[range.start..range.end]
+///     }
+///     fn len(&self) -> usize { self.storage.len() }
+/// }
+/// let mut bip_buffer = BipBuffer::new(MyCustomStorage { storage: [0; 32] });
+/// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+/// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
+/// writer.commit(3).unwrap();
+/// assert_eq!(reader.values(), [1,2,3]);
+/// // reader.values() will always start with [1, 2, 3] until some values are consumed
+/// reader.consume(1);
+/// assert_eq!(reader.values(), [2,3]);
+/// // Commited values may appear in calls to values()
+/// writer.prepare(1).unwrap()[0] = 4;
+/// writer.commit(1);
+/// assert_eq!(reader.values(), [2,3,4]);
+/// ```
+pub trait StorageRef<T> {
+    /// Provides a slice over the specified range.
+    fn slice(&self, range: core::ops::Range<usize>) -> &[T];
+    /// Provides a mutable slice over the specified range.
+    fn mut_slice(&mut self, range: core::ops::Range<usize>) -> &mut [T];
+    /// The total lenght of the storage.
+    fn len(&self) -> usize;
+}
+
+pub struct SafeStorageRef<'a, T> {
+    buffer: &'a mut [T]
+}
+
+impl<'a, T> SafeStorageRef<'a, T> {
+    pub fn new(buffer: &'a mut [T]) -> Self {
+        Self {
+            buffer: buffer
+        }
+    }
+}
+
+impl<'a, T> StorageRef<T> for SafeStorageRef<'a, T> {
+    fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
+        &self.buffer[range.start..range.end]
+    }
+    fn mut_slice(&mut self, range: core::ops::Range<usize>) -> &mut [T] {
+        &mut self.buffer[range.start..range.end]
+    }
+    fn len(&self) -> usize {
+        self.buffer.len()
+    }
+}
+
+pub struct UnsafeStorageRef<'a, T> {
+    buffer: *mut T,
+    len: usize,
+    _phantom: core::marker::PhantomData<&'a T>
+}
+
+impl<'a, T> UnsafeStorageRef<'a, T> {
+    pub fn new(buffer: &mut [T]) -> Self {
+        Self {
+            buffer: buffer.as_mut_ptr(),
+            len: buffer.len(),
+            _phantom: core::marker::PhantomData
+        }
+    }
+}
+
+impl<'a, T> StorageRef<T> for UnsafeStorageRef<'a, T> {
+    fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
+        unsafe { core::slice::from_raw_parts(self.buffer.add(range.start), range.len()) }
+    }
+    fn mut_slice(&mut self, range: core::ops::Range<usize>) -> &mut [T] {
+        unsafe { core::slice::from_raw_parts_mut(self.buffer.add(range.start), range.len()) }
+    }
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
 /// A SPSC [BipBuffer](https://ferrous-systems.com/blog/lock-free-ring-buffer/) with external storage.
 ///
 /// The BipBuffer itself only provides access to a reader and a writer handle, which provides
@@ -59,33 +155,35 @@ pub enum PrepareError {
 /// # Requirements
 ///
 /// * `T` must implement `Clone`.
-pub struct BipBuffer<'a, T> {
-    buffer: &'a mut [T],
+pub struct BipBuffer<'a, T, St> where St: StorageRef<T> {
+    buffer: St,
     watermark: AtomicUsize,
     read: AtomicUsize,
     write: AtomicUsize,
     rw_taken: bool,
+    _phantom: core::marker::PhantomData<&'a T>,
 }
 
-impl<'a, T> BipBuffer<'a, T> {
-    pub const fn capacity(&self) -> usize {
+impl<'a, T, St> BipBuffer<'a, T, St> where St: StorageRef<T> {
+    pub fn capacity(&self) -> usize {
         return self.buffer.len();
     }
 }
 
-impl<'a, T: Clone> BipBuffer<'a, T> {
+impl<'a, T: Clone, St> BipBuffer<'a, T, St> where St: StorageRef<T> {
     /// Construct a new BipBuffer from an external buffer
     ///
     /// # Arguments
     ///
     /// * `buffer` - The backing storage for the buffer.
-    pub fn new(buffer: &'a mut [T]) -> Self {
+    pub fn new(buffer: St) -> Self {
         BipBuffer {
             buffer: buffer,
             watermark: AtomicUsize::new(0),
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
             rw_taken: false,
+            _phantom: core::marker::PhantomData
         }
     }
 
@@ -95,7 +193,7 @@ impl<'a, T: Clone> BipBuffer<'a, T> {
     /// will return `None`.
     pub fn take_reader_writer(
         &mut self,
-    ) -> Option<(BipBufferReader<'a, T>, BipBufferWriter<'a, T>)> {
+    ) -> Option<(BipBufferReader<'a, T, St>, BipBufferWriter<'a, T, St>)> {
         if self.rw_taken {
             return None;
         }
@@ -121,8 +219,9 @@ impl<'a, T: Clone> BipBuffer<'a, T> {
 ///
 /// # Example
 /// ```
+/// # use ubip_buffer::*;
 /// let mut buffer = [0; 10];
-/// let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+/// let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
 /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 /// writer.commit(3).unwrap();
@@ -135,13 +234,13 @@ impl<'a, T: Clone> BipBuffer<'a, T> {
 /// writer.commit(1);
 /// assert_eq!(reader.values(), [2,3,4]);
 /// ```
-pub struct BipBufferReader<'a, T> {
-    buffer: *mut BipBuffer<'a, T>,
+pub struct BipBufferReader<'a, T, St> where St: StorageRef<T> {
+    buffer: *mut BipBuffer<'a, T, St>,
 }
 
-unsafe impl<'a, T> core::marker::Send for BipBufferReader<'a, T> {}
+unsafe impl<'a, T, St: StorageRef<T>> core::marker::Send for BipBufferReader<'a, T, St> {}
 
-impl<'a, T: Clone> BipBufferReader<'a, T> {
+impl<'a, T: Clone, St> BipBufferReader<'a, T, St> where St: StorageRef<T> {
     /// Gets a reference to a committed slice of data.
     ///
     /// It might be necessary to read values and consume them
@@ -149,23 +248,23 @@ impl<'a, T: Clone> BipBufferReader<'a, T> {
     /// buffer.
     ///
     /// Call to `self.consume()` to ensure that new values are read.
-    pub fn values(&self) -> &'a [T] {
+    pub fn values(&self) -> &[T] {
         let buffer = unsafe { &(*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
         let read = buffer.read.load(Ordering::SeqCst);
 
         if write >= read {
             let size = write - read;
-            return &buffer.buffer[read..(read + size)];
+            return &buffer.buffer.slice(read..(read + size));
         } else {
             // Read leads write, so we can return [read, watermark)
             let watermark = buffer.watermark.load(Ordering::SeqCst);
             if watermark > read {
                 // We return [read, watermark)
-                return &buffer.buffer[read..watermark];
+                return &buffer.buffer.slice(read..watermark);
             }
             // We return [0, write)
-            return &buffer.buffer[0..write];
+            return &buffer.buffer.slice(0..write);
         }
     }
 
@@ -225,8 +324,9 @@ impl<'a, T: Clone> BipBufferReader<'a, T> {
 /// must be commited from the start of the prepared area.
 ///
 /// ```
+/// # use ubip_buffer::*;
 /// let mut buffer = [0; 10];
-/// let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+/// let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
 /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
 /// assert_eq!(reader.values(), []);
@@ -237,12 +337,12 @@ impl<'a, T: Clone> BipBufferReader<'a, T> {
 /// writer.commit(1).unwrap();
 /// assert_eq!(reader.values(), [1, 2, 3]);
 /// ```
-pub struct BipBufferWriter<'a, T> {
-    buffer: *mut BipBuffer<'a, T>,
+pub struct BipBufferWriter<'a, T, St> where St: StorageRef<T> {
+    buffer: *mut BipBuffer<'a, T, St>,
     prepared: usize,
 }
 
-impl<'a, T> BipBufferWriter<'a, T> {
+impl<'a, T, St> BipBufferWriter<'a, T, St> where St: StorageRef<T> {
     /// Returns the total capacity of the `BipBuffer`
     ///
     /// This is usually not that useful, depending on where the read pointer is
@@ -252,9 +352,9 @@ impl<'a, T> BipBufferWriter<'a, T> {
     }
 }
 
-unsafe impl<'a, T> core::marker::Send for BipBufferWriter<'a, T> {}
+unsafe impl<'a, T, St> core::marker::Send for BipBufferWriter<'a, T, St> where St: StorageRef<T> {}
 
-impl<'a, T: Clone> BipBufferWriter<'a, T> {
+impl<'a, T: Clone, St> BipBufferWriter<'a, T, St> where St: StorageRef<T> {
     /// Try to prepare a set amount of data for commitment.
     ///
     /// Depending on the current state of the `BipBuffer`, data can
@@ -287,13 +387,13 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
             if amount_available_to_end >= amount {
                 self.prepared = amount;
                 buffer.watermark.store(write + amount, Ordering::SeqCst);
-                return Ok(&mut buffer.buffer[write..write + amount]);
+                return Ok(buffer.buffer.mut_slice(write..(write + amount)));
             } else if read > amount {
                 // We have room at the start of the buffer,
                 // insert a watermark return [0..amount]
                 buffer.watermark.store(write, Ordering::SeqCst);
                 self.prepared = amount;
-                return Ok(&mut buffer.buffer[0..amount]);
+                return Ok(buffer.buffer.mut_slice(0..amount));
             }
 
             return Err(PrepareError::NoRoom {
@@ -310,7 +410,7 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
                 });
             }
             self.prepared = amount;
-            return Ok(&mut buffer.buffer[write..write + amount]);
+            return Ok(buffer.buffer.mut_slice(write..write + amount));
         }
     }
 
@@ -349,20 +449,20 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
                 if read >= 2 {
                     buffer.watermark.store(len, Ordering::SeqCst);
                     self.prepared = read - 1;
-                    return Ok(&mut buffer.buffer[0..read - 1]);
+                    return Ok(buffer.buffer.mut_slice(0..read - 1));
                 }
                 return Err(PrepareError::NoRoom { max_available: 0 });
             }
             self.prepared = amount;
             buffer.watermark.store(len, Ordering::SeqCst);
-            return Ok(&mut buffer.buffer[write..len]);
+            return Ok(buffer.buffer.mut_slice(write..len));
         } else {
             let available = (read - 1).saturating_sub(write);
             if available == 0 {
                 return Err(PrepareError::NoRoom { max_available: 0 });
             }
             self.prepared = available;
-            return Ok(&mut buffer.buffer[write..write + available]);
+            return Ok(buffer.buffer.mut_slice(write..write + available));
         }
     }
 
@@ -389,19 +489,19 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
                 if available_before_len > 0 {
                     buffer.watermark.store(len, Ordering::SeqCst);
                     self.prepared = available_before_len;
-                    return Ok(&mut buffer.buffer[write..len]);
+                    return Ok(buffer.buffer.mut_slice(write..len));
                 }
                 return Err(PrepareError::NoRoom { max_available: 0 });
             } else {
                 buffer.watermark.store(write, Ordering::SeqCst);
                 self.prepared = available_before_read;
-                return Ok(&mut buffer.buffer[0..available_before_read]);
+                return Ok(buffer.buffer.mut_slice(0..available_before_read));
             }
         } else {
             let available = (read - 1).saturating_sub(write);
             if available >= 1 {
                 self.prepared = available;
-                return Ok(&mut buffer.buffer[write..write + available]);
+                return Ok(buffer.buffer.mut_slice(write..write + available));
             }
         }
 
@@ -465,8 +565,9 @@ impl<'a, T: Clone> BipBufferWriter<'a, T> {
     /// # Example
     ///
     /// ```
+    /// # use ubip_buffer::*;
     /// let mut buffer = [0; 10];
-    /// let mut bip_buffer = ubip_buffer::BipBuffer::new(&mut buffer);
+    /// let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
     /// let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
     /// let to_write = writer.prepare(3).unwrap().copy_from_slice(&[1,2,3]);
     /// assert_eq!(reader.values(), []);
@@ -494,7 +595,7 @@ mod tests {
     fn singleton_reader_writer() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (_, _) = bip_buffer.take_reader_writer().unwrap();
         assert!(bip_buffer.take_reader_writer().is_none());
     }
@@ -502,7 +603,7 @@ mod tests {
     fn single_produce_consume() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         for x in &expected {
@@ -527,7 +628,7 @@ mod tests {
     fn cannot_prepare_more_than_once() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (mut _reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         writer.prepare(expected.len()).unwrap();
@@ -545,7 +646,7 @@ mod tests {
     fn prepare_wraps() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert!(writer.prepare(expected.len()).is_ok());
@@ -574,7 +675,7 @@ mod tests {
     fn insert_watermark() {
         let expected = [10, 20, 30, 40, 50];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert!(writer.prepare(4).is_ok());
@@ -590,7 +691,7 @@ mod tests {
     fn single_produce_multi_consume() {
         let expected = [10, 20, 30, 40];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert_eq!(reader.values().len(), 0);
@@ -625,7 +726,7 @@ mod tests {
     fn prepare_max() {
         let expected = [10, 20, 30, 40, 50];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         let expect_all = writer.prepare_max().unwrap().len();
@@ -680,7 +781,7 @@ mod tests {
     fn discard_write_resets_writer() {
         let expected = [10, 20, 30, 40, 50];
         let mut buffer = expected;
-        let mut bip_buffer = BipBuffer::new(&mut buffer);
+        let mut bip_buffer = BipBuffer::new(SafeStorageRef::new(&mut buffer));
         let (reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
 
         assert_eq!(reader.values(), []);
