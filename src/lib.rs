@@ -103,7 +103,7 @@ where
     T: Clone,
 {
     pub fn new(buffer: &'a mut [T]) -> Self {
-        Self { buffer: buffer }
+        Self { buffer }
     }
 }
 
@@ -188,7 +188,7 @@ where
     St: Storage,
 {
     pub fn capacity(&self) -> usize {
-        return self.buffer.len();
+        self.buffer.len()
     }
 }
 
@@ -203,7 +203,7 @@ where
     /// * `buffer` - The backing storage for the buffer.
     pub fn new(buffer: St) -> Self {
         BipBuffer {
-            buffer: buffer,
+            buffer,
             watermark: AtomicUsize::new(0),
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
@@ -220,13 +220,13 @@ where
             return None;
         }
         self.rw_taken = true;
-        return Some((
+        Some((
             BipBufferReader { buffer: self },
             BipBufferWriter {
                 buffer: self,
                 prepared: 0,
             },
-        ));
+        ))
     }
 }
 
@@ -283,7 +283,7 @@ where
 
         if write >= read {
             let size = write - read;
-            return buffer.buffer.slice(read..(read + size));
+            buffer.buffer.slice(read..(read + size))
         } else {
             // Read leads write, so we can return [read, watermark)
             let watermark = buffer.watermark.load(Ordering::SeqCst);
@@ -292,7 +292,7 @@ where
                 return &buffer.buffer.slice(read..watermark);
             }
             // We return [0, write)
-            return &buffer.buffer.slice(0..write);
+            buffer.buffer.slice(0..write)
         }
     }
 
@@ -322,7 +322,7 @@ where
                 return Err(write - read);
             }
             buffer.read.store(read + amount, Ordering::SeqCst);
-            return Ok(());
+            Ok(())
         } else {
             // Read leads write, we can at most consume all data from read to watermark
             // plus any written data before read.
@@ -334,7 +334,7 @@ where
             // Handle wrapping at the watermark
             let new_read = (read + amount) % watermark;
             buffer.read.store(new_read, Ordering::SeqCst);
-            return Ok(());
+            Ok(())
         }
     }
 }
@@ -382,7 +382,7 @@ where
     /// This is usually not that useful, depending on where the read pointer is
     /// located only parts of the total capacity is availabe.
     pub fn capacity(&self) -> usize {
-        return unsafe { (*self.buffer).capacity() };
+        unsafe { (*self.buffer).capacity() }
     }
 }
 
@@ -492,14 +492,14 @@ where
             }
             self.prepared = amount;
             buffer.watermark.store(len, Ordering::SeqCst);
-            return Ok(buffer.buffer.mut_slice(write..len));
+            Ok(buffer.buffer.mut_slice(write..len))
         } else {
             let available = (read - 1).saturating_sub(write);
             if available == 0 {
                 return Err(PrepareError::NoRoom { max_available: 0 });
             }
             self.prepared = available;
-            return Ok(buffer.buffer.mut_slice(write..write + available));
+            Ok(buffer.buffer.mut_slice(write..write + available))
         }
     }
 
@@ -542,7 +542,7 @@ where
             }
         }
 
-        return Err(PrepareError::NoRoom { max_available: 0 });
+        Err(PrepareError::NoRoom { max_available: 0 })
     }
 
     /// Commits a previsouly prepared part of data.
@@ -588,7 +588,7 @@ where
 
         buffer.write.store(new_write, Ordering::SeqCst);
 
-        return Ok(self.prepared);
+        Ok(self.prepared)
     }
 
     /// Discards uncommited but prepared data.
