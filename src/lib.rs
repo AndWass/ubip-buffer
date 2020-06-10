@@ -433,9 +433,9 @@ where
                 return Ok(buffer.buffer.mut_slice(0..amount));
             }
 
-            return Err(PrepareError::NoRoom {
+            Err(PrepareError::NoRoom {
                 max_available: amount_available_to_end.max(read.saturating_sub(1)),
-            });
+            })
         } else {
             // Read leads write, so the only chance is that we have enough
             // room in [write..read-1)
@@ -447,7 +447,7 @@ where
                 });
             }
             self.prepared = amount;
-            return Ok(buffer.buffer.mut_slice(write..write + amount));
+            Ok(buffer.buffer.mut_slice(write..write + amount))
         }
     }
 
@@ -620,7 +620,7 @@ where
     pub fn discard(&mut self) -> usize {
         let retval = self.prepared;
         self.prepared = 0;
-        return retval;
+        retval
     }
 }
 
