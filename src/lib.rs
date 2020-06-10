@@ -58,7 +58,8 @@ pub enum PrepareError {
 /// struct MyCustomStorage {
 ///     storage: [i32; 32]
 /// }
-/// impl Storage<i32> for MyCustomStorage {
+/// impl Storage for MyCustomStorage {
+///     type ValueType = i32;
 ///     fn slice(&self, range: core::ops::Range<usize>) -> &[i32] {
 ///         &self.storage[range.start..range.end]
 ///     }
@@ -80,11 +81,12 @@ pub enum PrepareError {
 /// writer.commit(1);
 /// assert_eq!(reader.values(), [2,3,4]);
 /// ```
-pub trait Storage<T> {
+pub trait Storage {
+    type ValueType;
     /// Provides a slice over the specified range.
-    fn slice(&self, range: core::ops::Range<usize>) -> &[T];
+    fn slice(&self, range: core::ops::Range<usize>) -> &[Self::ValueType];
     /// Provides a mutable slice over the specified range.
-    fn mut_slice(&mut self, range: core::ops::Range<usize>) -> &mut [T];
+    fn mut_slice(&mut self, range: core::ops::Range<usize>) -> &mut [Self::ValueType];
     /// The total lenght of the storage.
     fn len(&self) -> usize;
 }
@@ -105,10 +107,11 @@ where
     }
 }
 
-impl<'a, T> Storage<T> for StorageRef<'a, T>
+impl<'a, T> Storage for StorageRef<'a, T>
 where
     T: Clone,
 {
+    type ValueType = T;
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         &self.buffer[range.start..range.end]
     }
@@ -120,16 +123,15 @@ where
     }
 }
 
-pub struct UnsafeStorageRef<'a, T>
+pub struct UnsafeStorageRef<T>
 where
     T: Clone,
 {
     buffer: *mut T,
     len: usize,
-    _phantom: core::marker::PhantomData<&'a T>,
 }
 
-impl<'a, T> UnsafeStorageRef<'a, T>
+impl<'a, T> UnsafeStorageRef<T>
 where
     T: Clone,
 {
@@ -137,15 +139,15 @@ where
         Self {
             buffer: buffer.as_mut_ptr(),
             len: buffer.len(),
-            _phantom: core::marker::PhantomData,
         }
     }
 }
 
-impl<'a, T> Storage<T> for UnsafeStorageRef<'a, T>
+impl<T> Storage for UnsafeStorageRef<T>
 where
     T: Clone,
 {
+    type ValueType = T;
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.buffer.add(range.start), range.len()) }
     }
@@ -170,31 +172,29 @@ where
 /// # Requirements
 ///
 /// * `T` must implement `Clone`.
-pub struct BipBuffer<'a, T, St>
+pub struct BipBuffer<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
     buffer: St,
     watermark: AtomicUsize,
     read: AtomicUsize,
     write: AtomicUsize,
     rw_taken: bool,
-    _phantom: core::marker::PhantomData<&'a T>,
 }
 
-impl<'a, T, St> BipBuffer<'a, T, St>
+impl<St> BipBuffer<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
     pub fn capacity(&self) -> usize {
         return self.buffer.len();
     }
 }
 
-impl<'a, T, St> BipBuffer<'a, T, St>
+impl<St> BipBuffer<St>
 where
-    St: Storage<T>,
-    T: Clone,
+    St: Storage,
 {
     /// Construct a new BipBuffer from an external buffer
     ///
@@ -208,7 +208,6 @@ where
             read: AtomicUsize::new(0),
             write: AtomicUsize::new(0),
             rw_taken: false,
-            _phantom: core::marker::PhantomData,
         }
     }
 
@@ -216,9 +215,7 @@ where
     ///
     /// This is a one-shot function, any subsequent calls to this function
     /// will return `None`.
-    pub fn take_reader_writer(
-        &mut self,
-    ) -> Option<(BipBufferReader<'a, T, St>, BipBufferWriter<'a, T, St>)> {
+    pub fn take_reader_writer(&mut self) -> Option<(BipBufferReader<St>, BipBufferWriter<St>)> {
         if self.rw_taken {
             return None;
         }
@@ -259,18 +256,18 @@ where
 /// writer.commit(1);
 /// assert_eq!(reader.values(), [2,3,4]);
 /// ```
-pub struct BipBufferReader<'a, T, St>
+pub struct BipBufferReader<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
-    buffer: *mut BipBuffer<'a, T, St>,
+    buffer: *mut BipBuffer<St>,
 }
 
-unsafe impl<'a, T, St> core::marker::Send for BipBufferReader<'a, T, St> where St: Storage<T> {}
+unsafe impl<St> core::marker::Send for BipBufferReader<St> where St: Storage {}
 
-impl<'a, T, St> BipBufferReader<'a, T, St>
+impl<St> BipBufferReader<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
     /// Gets a reference to a committed slice of data.
     ///
@@ -279,14 +276,14 @@ where
     /// buffer.
     ///
     /// Call to `self.consume()` to ensure that new values are read.
-    pub fn values(&self) -> &[T] {
+    pub fn values(&self) -> &[St::ValueType] {
         let buffer = unsafe { &(*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
         let read = buffer.read.load(Ordering::SeqCst);
 
         if write >= read {
             let size = write - read;
-            return &buffer.buffer.slice(read..(read + size));
+            return buffer.buffer.slice(read..(read + size));
         } else {
             // Read leads write, so we can return [read, watermark)
             let watermark = buffer.watermark.load(Ordering::SeqCst);
@@ -368,17 +365,17 @@ where
 /// writer.commit(1).unwrap();
 /// assert_eq!(reader.values(), [1, 2, 3]);
 /// ```
-pub struct BipBufferWriter<'a, T, St>
+pub struct BipBufferWriter<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
-    buffer: *mut BipBuffer<'a, T, St>,
+    buffer: *mut BipBuffer<St>,
     prepared: usize,
 }
 
-impl<'a, T, St> BipBufferWriter<'a, T, St>
+impl<St> BipBufferWriter<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
     /// Returns the total capacity of the `BipBuffer`
     ///
@@ -389,11 +386,11 @@ where
     }
 }
 
-unsafe impl<'a, T, St> core::marker::Send for BipBufferWriter<'a, T, St> where St: Storage<T> {}
+unsafe impl<St> core::marker::Send for BipBufferWriter<St> where St: Storage {}
 
-impl<'a, T, St> BipBufferWriter<'a, T, St>
+impl<St> BipBufferWriter<St>
 where
-    St: Storage<T>,
+    St: Storage,
 {
     /// Try to prepare a set amount of data for commitment.
     ///
@@ -410,7 +407,7 @@ where
     ///
     /// A slice to the internal buffer with `len()` equal to `amount`. This should be written to
     /// and commited after the buffer is done.
-    pub fn prepare(&mut self, amount: usize) -> Result<&mut [T], PrepareError> {
+    pub fn prepare(&mut self, amount: usize) -> Result<&mut [St::ValueType], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
                 amount: self.prepared,
@@ -470,7 +467,7 @@ where
     ///
     /// If `write == len` and `read >= 2` then the slice `[0, read-1)`
     /// will be returned.
-    pub fn prepare_trailing(&mut self) -> Result<&mut [T], PrepareError> {
+    pub fn prepare_trailing(&mut self) -> Result<&mut [St::ValueType], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
                 amount: self.prepared,
@@ -510,7 +507,7 @@ where
     ///
     /// Depending on the state of the buffer this is either located
     /// at `[write, len)`, `[0, read-1)` or `[write, read-1)`
-    pub fn prepare_max(&mut self) -> Result<&mut [T], PrepareError> {
+    pub fn prepare_max(&mut self) -> Result<&mut [St::ValueType], PrepareError> {
         if self.prepared > 0 {
             return Err(PrepareError::UncommitedData {
                 amount: self.prepared,
