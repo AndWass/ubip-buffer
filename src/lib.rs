@@ -46,6 +46,11 @@ pub enum PrepareError {
     NoRoom { max_available: usize },
 }
 
+#[derive(core::fmt::Debug, PartialEq)]
+pub enum ConsumeError {
+    NoneConsumed
+}
+
 /// Trait used by BipBuffers to reference storage.
 ///
 /// This trait can be implemented by custom types to provide
@@ -92,15 +97,11 @@ pub trait Storage {
 }
 
 pub struct StorageRef<'a, T>
-where
-    T: Clone,
 {
     buffer: &'a mut [T],
 }
 
 impl<'a, T> StorageRef<'a, T>
-where
-    T: Clone,
 {
     pub fn new(buffer: &'a mut [T]) -> Self {
         Self { buffer }
@@ -108,8 +109,6 @@ where
 }
 
 impl<'a, T> Storage for StorageRef<'a, T>
-where
-    T: Clone,
 {
     type ValueType = T;
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
@@ -124,16 +123,12 @@ where
 }
 
 pub struct UnsafeStorageRef<T>
-where
-    T: Clone,
 {
     buffer: *mut T,
     len: usize,
 }
 
 impl<'a, T> UnsafeStorageRef<T>
-where
-    T: Clone,
 {
     pub fn new(buffer: &mut [T]) -> Self {
         Self {
@@ -144,8 +139,6 @@ where
 }
 
 impl<T> Storage for UnsafeStorageRef<T>
-where
-    T: Clone,
 {
     type ValueType = T;
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
@@ -168,10 +161,6 @@ where
 /// is used.
 ///
 /// Both readers and writers implement `Send` so they can be sent to a secondary thread.
-///
-/// # Requirements
-///
-/// * `T` must implement `Clone`.
 pub struct BipBuffer<St>
 where
     St: Storage,
@@ -306,35 +295,41 @@ where
     ///
     /// # Arguments
     ///
-    /// * `amount` - The number of values to consume.
+    /// * `amount` - The number of values to consume. If this is more than what
+    ///   is available for consumption all values will be consumed.
     ///
     /// # Returns
     ///
-    /// `Ok(())` if `amount` values were consumed, otherwise the maximum number of values that could be
-    /// consumed when this function was called.
-    pub fn consume(&mut self, amount: usize) -> Result<(), usize> {
+    /// The number of items consumed.
+    pub fn consume(&mut self, amount: usize) -> Result<usize, ConsumeError> {
+        if amount == 0 {
+            return Ok(0usize);
+        }
+
         let buffer = unsafe { &mut (*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
         let read = buffer.read.load(Ordering::SeqCst);
         if write >= read {
             // Write leads read, we can at most consume (write - read) number of elements
-            if amount > (write - read) {
-                return Err(write - read);
+            let amount = amount.min(write-read);
+            if amount == 0 {
+                return Err(ConsumeError::NoneConsumed);
             }
             buffer.read.store(read + amount, Ordering::SeqCst);
-            Ok(())
+            Ok(amount)
         } else {
             // Read leads write, we can at most consume all data from read to watermark
             // plus any written data before read.
             let watermark = buffer.watermark.load(Ordering::SeqCst);
             let available_for_consumption = watermark - read + write;
-            if amount > available_for_consumption {
-                return Err(available_for_consumption);
+            let amount = amount.min(available_for_consumption);
+            if amount == 0 {
+                return Err(ConsumeError::NoneConsumed);
             }
             // Handle wrapping at the watermark
             let new_read = (read + amount) % watermark;
             buffer.read.store(new_read, Ordering::SeqCst);
-            Ok(())
+            Ok(amount)
         }
     }
 }
@@ -428,7 +423,10 @@ where
             } else if read > amount {
                 // We have room at the start of the buffer,
                 // insert a watermark return [0..amount]
+                // Do not reorder these stores, watermark must be stored before write
+                // so that it is visible for the reader before write is visible to the reader.
                 buffer.watermark.store(write, Ordering::SeqCst);
+                buffer.write.store(0, Ordering::SeqCst);
                 self.prepared = amount;
                 return Ok(buffer.buffer.mut_slice(0..amount));
             }
@@ -485,6 +483,7 @@ where
                 // write == len, check if we have room at the beginning of the buffer
                 if read >= 2 {
                     buffer.watermark.store(len, Ordering::SeqCst);
+                    buffer.write.store(0, Ordering::SeqCst);
                     self.prepared = read - 1;
                     return Ok(buffer.buffer.mut_slice(0..read - 1));
                 }
@@ -531,6 +530,7 @@ where
                 return Err(PrepareError::NoRoom { max_available: 0 });
             } else {
                 buffer.watermark.store(write, Ordering::SeqCst);
+                buffer.write.store(0, Ordering::SeqCst);
                 self.prepared = available_before_read;
                 return Ok(buffer.buffer.mut_slice(0..available_before_read));
             }
@@ -567,24 +567,10 @@ where
 
         let buffer = unsafe { &mut (*self.buffer) };
         let write = buffer.write.load(Ordering::SeqCst);
-        let read = buffer.read.load(Ordering::SeqCst);
 
         self.prepared -= amount;
 
-        let new_write = if write >= read {
-            // We need to ajdust write to
-            // write + amount % watermark
-            let watermark = buffer.watermark.load(Ordering::SeqCst);
-            if watermark == write {
-                amount
-            } else {
-                write + amount
-            }
-        } else {
-            // We can just adjust write to
-            // write+amount
-            write + amount
-        };
+        let new_write = write + amount;
 
         buffer.write.store(new_write, Ordering::SeqCst);
 
@@ -827,5 +813,21 @@ mod tests {
         prepared[0] = 1;
         writer.commit(1).unwrap();
         assert_eq!(writer.discard(), 1);
+    }
+
+    #[test]
+    fn values_to_watermark_sets_read_to_0() {
+        let expected = [10, 20, 30, 40, 50];
+        let mut buffer = expected;
+        let mut bip_buffer = BipBuffer::new(StorageRef::new(&mut buffer));
+        let (mut reader, mut writer) = bip_buffer.take_reader_writer().unwrap();
+
+        writer.prepare(3).unwrap();
+        writer.commit(3).unwrap();
+        reader.consume(3).unwrap();
+        writer.prepare(2).unwrap();
+        writer.commit(2).unwrap();
+
+        assert!(writer.prepare(2).is_ok());
     }
 }
