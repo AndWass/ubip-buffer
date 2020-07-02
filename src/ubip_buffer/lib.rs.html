@@ -825,10 +825,6 @@
 <span id="825">825</span>
 <span id="826">826</span>
 <span id="827">827</span>
-<span id="828">828</span>
-<span id="829">829</span>
-<span id="830">830</span>
-<span id="831">831</span>
 </pre><div class="example-wrap"><pre class="rust ">
 <span class="comment">//          Copyright Andreas Wass 2004 - 2020.</span>
 <span class="comment">// Distributed under the Boost Software License, Version 1.0.</span>
@@ -878,6 +874,11 @@
     <span class="ident">NoRoom</span> { <span class="ident">max_available</span>: <span class="ident">usize</span> },
 }
 
+<span class="attribute">#[<span class="ident">derive</span>(<span class="ident">core</span>::<span class="ident">fmt</span>::<span class="ident">Debug</span>, <span class="ident">PartialEq</span>)]</span>
+<span class="kw">pub</span> <span class="kw">enum</span> <span class="ident">ConsumeError</span> {
+    <span class="ident">NoneConsumed</span>,
+}
+
 <span class="doccomment">/// Trait used by BipBuffers to reference storage.</span>
 <span class="doccomment">///</span>
 <span class="doccomment">/// This trait can be implemented by custom types to provide</span>
@@ -923,26 +924,17 @@
     <span class="kw">fn</span> <span class="ident">len</span>(<span class="kw-2">&amp;</span><span class="self">self</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="ident">usize</span>;
 }
 
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">StorageRef</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span>
-<span class="kw">where</span>
-    <span class="ident">T</span>: <span class="ident">Clone</span>,
-{
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">StorageRef</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> {
     <span class="ident">buffer</span>: <span class="kw-2">&amp;</span><span class="lifetime">&#39;a</span> <span class="kw-2">mut</span> [<span class="ident">T</span>],
 }
 
-<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">StorageRef</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span>
-<span class="kw">where</span>
-    <span class="ident">T</span>: <span class="ident">Clone</span>,
-{
+<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">StorageRef</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> {
     <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">new</span>(<span class="ident">buffer</span>: <span class="kw-2">&amp;</span><span class="lifetime">&#39;a</span> <span class="kw-2">mut</span> [<span class="ident">T</span>]) <span class="op">-</span><span class="op">&gt;</span> <span class="self">Self</span> {
         <span class="self">Self</span> { <span class="ident">buffer</span> }
     }
 }
 
-<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">Storage</span> <span class="kw">for</span> <span class="ident">StorageRef</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span>
-<span class="kw">where</span>
-    <span class="ident">T</span>: <span class="ident">Clone</span>,
-{
+<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">Storage</span> <span class="kw">for</span> <span class="ident">StorageRef</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> {
     <span class="kw">type</span> <span class="ident">ValueType</span> <span class="op">=</span> <span class="ident">T</span>;
     <span class="kw">fn</span> <span class="ident">slice</span>(<span class="kw-2">&amp;</span><span class="self">self</span>, <span class="ident">range</span>: <span class="ident">core</span>::<span class="ident">ops</span>::<span class="ident">Range</span><span class="op">&lt;</span><span class="ident">usize</span><span class="op">&gt;</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="kw-2">&amp;</span>[<span class="ident">T</span>] {
         <span class="kw-2">&amp;</span><span class="self">self</span>.<span class="ident">buffer</span>[<span class="ident">range</span>.<span class="ident">start</span>..<span class="ident">range</span>.<span class="ident">end</span>]
@@ -955,18 +947,12 @@
     }
 }
 
-<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">UnsafeStorageRef</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>
-<span class="kw">where</span>
-    <span class="ident">T</span>: <span class="ident">Clone</span>,
-{
+<span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">UnsafeStorageRef</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
     <span class="ident">buffer</span>: <span class="kw-2">*</span><span class="kw-2">mut</span> <span class="ident">T</span>,
     <span class="ident">len</span>: <span class="ident">usize</span>,
 }
 
-<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">UnsafeStorageRef</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>
-<span class="kw">where</span>
-    <span class="ident">T</span>: <span class="ident">Clone</span>,
-{
+<span class="kw">impl</span><span class="op">&lt;</span><span class="lifetime">&#39;a</span>, <span class="ident">T</span><span class="op">&gt;</span> <span class="ident">UnsafeStorageRef</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
     <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">new</span>(<span class="ident">buffer</span>: <span class="kw-2">&amp;</span><span class="kw-2">mut</span> [<span class="ident">T</span>]) <span class="op">-</span><span class="op">&gt;</span> <span class="self">Self</span> {
         <span class="self">Self</span> {
             <span class="ident">buffer</span>: <span class="ident">buffer</span>.<span class="ident">as_mut_ptr</span>(),
@@ -975,10 +961,7 @@
     }
 }
 
-<span class="kw">impl</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> <span class="ident">Storage</span> <span class="kw">for</span> <span class="ident">UnsafeStorageRef</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span>
-<span class="kw">where</span>
-    <span class="ident">T</span>: <span class="ident">Clone</span>,
-{
+<span class="kw">impl</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> <span class="ident">Storage</span> <span class="kw">for</span> <span class="ident">UnsafeStorageRef</span><span class="op">&lt;</span><span class="ident">T</span><span class="op">&gt;</span> {
     <span class="kw">type</span> <span class="ident">ValueType</span> <span class="op">=</span> <span class="ident">T</span>;
     <span class="kw">fn</span> <span class="ident">slice</span>(<span class="kw-2">&amp;</span><span class="self">self</span>, <span class="ident">range</span>: <span class="ident">core</span>::<span class="ident">ops</span>::<span class="ident">Range</span><span class="op">&lt;</span><span class="ident">usize</span><span class="op">&gt;</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="kw-2">&amp;</span>[<span class="ident">T</span>] {
         <span class="kw">unsafe</span> { <span class="ident">core</span>::<span class="ident">slice</span>::<span class="ident">from_raw_parts</span>(<span class="self">self</span>.<span class="ident">buffer</span>.<span class="ident">add</span>(<span class="ident">range</span>.<span class="ident">start</span>), <span class="ident">range</span>.<span class="ident">len</span>()) }
@@ -1000,10 +983,6 @@
 <span class="doccomment">/// is used.</span>
 <span class="doccomment">///</span>
 <span class="doccomment">/// Both readers and writers implement `Send` so they can be sent to a secondary thread.</span>
-<span class="doccomment">///</span>
-<span class="doccomment">/// # Requirements</span>
-<span class="doccomment">///</span>
-<span class="doccomment">/// * `T` must implement `Clone`.</span>
 <span class="kw">pub</span> <span class="kw">struct</span> <span class="ident">BipBuffer</span><span class="op">&lt;</span><span class="ident">St</span><span class="op">&gt;</span>
 <span class="kw">where</span>
     <span class="ident">St</span>: <span class="ident">Storage</span>,
@@ -1138,35 +1117,41 @@
     <span class="doccomment">///</span>
     <span class="doccomment">/// # Arguments</span>
     <span class="doccomment">///</span>
-    <span class="doccomment">/// * `amount` - The number of values to consume.</span>
+    <span class="doccomment">/// * `amount` - The number of values to consume. If this is more than what</span>
+    <span class="doccomment">///   is available for consumption all values will be consumed.</span>
     <span class="doccomment">///</span>
     <span class="doccomment">/// # Returns</span>
     <span class="doccomment">///</span>
-    <span class="doccomment">/// `Ok(())` if `amount` values were consumed, otherwise the maximum number of values that could be</span>
-    <span class="doccomment">/// consumed when this function was called.</span>
-    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">consume</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">amount</span>: <span class="ident">usize</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span>(), <span class="ident">usize</span><span class="op">&gt;</span> {
+    <span class="doccomment">/// The number of items consumed.</span>
+    <span class="kw">pub</span> <span class="kw">fn</span> <span class="ident">consume</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="self">self</span>, <span class="ident">amount</span>: <span class="ident">usize</span>) <span class="op">-</span><span class="op">&gt;</span> <span class="prelude-ty">Result</span><span class="op">&lt;</span><span class="ident">usize</span>, <span class="ident">ConsumeError</span><span class="op">&gt;</span> {
+        <span class="kw">if</span> <span class="ident">amount</span> <span class="op">=</span><span class="op">=</span> <span class="number">0</span> {
+            <span class="kw">return</span> <span class="prelude-val">Ok</span>(<span class="number">0usize</span>);
+        }
+
         <span class="kw">let</span> <span class="ident">buffer</span> <span class="op">=</span> <span class="kw">unsafe</span> { <span class="kw-2">&amp;</span><span class="kw-2">mut</span> (<span class="kw-2">*</span><span class="self">self</span>.<span class="ident">buffer</span>) };
         <span class="kw">let</span> <span class="ident">write</span> <span class="op">=</span> <span class="ident">buffer</span>.<span class="ident">write</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
         <span class="kw">let</span> <span class="ident">read</span> <span class="op">=</span> <span class="ident">buffer</span>.<span class="ident">read</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
         <span class="kw">if</span> <span class="ident">write</span> <span class="op">&gt;</span><span class="op">=</span> <span class="ident">read</span> {
             <span class="comment">// Write leads read, we can at most consume (write - read) number of elements</span>
-            <span class="kw">if</span> <span class="ident">amount</span> <span class="op">&gt;</span> (<span class="ident">write</span> <span class="op">-</span> <span class="ident">read</span>) {
-                <span class="kw">return</span> <span class="prelude-val">Err</span>(<span class="ident">write</span> <span class="op">-</span> <span class="ident">read</span>);
+            <span class="kw">let</span> <span class="ident">amount</span> <span class="op">=</span> <span class="ident">amount</span>.<span class="ident">min</span>(<span class="ident">write</span> <span class="op">-</span> <span class="ident">read</span>);
+            <span class="kw">if</span> <span class="ident">amount</span> <span class="op">=</span><span class="op">=</span> <span class="number">0</span> {
+                <span class="kw">return</span> <span class="prelude-val">Err</span>(<span class="ident">ConsumeError</span>::<span class="ident">NoneConsumed</span>);
             }
             <span class="ident">buffer</span>.<span class="ident">read</span>.<span class="ident">store</span>(<span class="ident">read</span> <span class="op">+</span> <span class="ident">amount</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
-            <span class="prelude-val">Ok</span>(())
+            <span class="prelude-val">Ok</span>(<span class="ident">amount</span>)
         } <span class="kw">else</span> {
             <span class="comment">// Read leads write, we can at most consume all data from read to watermark</span>
             <span class="comment">// plus any written data before read.</span>
             <span class="kw">let</span> <span class="ident">watermark</span> <span class="op">=</span> <span class="ident">buffer</span>.<span class="ident">watermark</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
             <span class="kw">let</span> <span class="ident">available_for_consumption</span> <span class="op">=</span> <span class="ident">watermark</span> <span class="op">-</span> <span class="ident">read</span> <span class="op">+</span> <span class="ident">write</span>;
-            <span class="kw">if</span> <span class="ident">amount</span> <span class="op">&gt;</span> <span class="ident">available_for_consumption</span> {
-                <span class="kw">return</span> <span class="prelude-val">Err</span>(<span class="ident">available_for_consumption</span>);
+            <span class="kw">let</span> <span class="ident">amount</span> <span class="op">=</span> <span class="ident">amount</span>.<span class="ident">min</span>(<span class="ident">available_for_consumption</span>);
+            <span class="kw">if</span> <span class="ident">amount</span> <span class="op">=</span><span class="op">=</span> <span class="number">0</span> {
+                <span class="kw">return</span> <span class="prelude-val">Err</span>(<span class="ident">ConsumeError</span>::<span class="ident">NoneConsumed</span>);
             }
             <span class="comment">// Handle wrapping at the watermark</span>
             <span class="kw">let</span> <span class="ident">new_read</span> <span class="op">=</span> (<span class="ident">read</span> <span class="op">+</span> <span class="ident">amount</span>) <span class="op">%</span> <span class="ident">watermark</span>;
             <span class="ident">buffer</span>.<span class="ident">read</span>.<span class="ident">store</span>(<span class="ident">new_read</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
-            <span class="prelude-val">Ok</span>(())
+            <span class="prelude-val">Ok</span>(<span class="ident">amount</span>)
         }
     }
 }
@@ -1260,7 +1245,10 @@
             } <span class="kw">else</span> <span class="kw">if</span> <span class="ident">read</span> <span class="op">&gt;</span> <span class="ident">amount</span> {
                 <span class="comment">// We have room at the start of the buffer,</span>
                 <span class="comment">// insert a watermark return [0..amount]</span>
+                <span class="comment">// Do not reorder these stores, watermark must be stored before write</span>
+                <span class="comment">// so that it is visible for the reader before write is visible to the reader.</span>
                 <span class="ident">buffer</span>.<span class="ident">watermark</span>.<span class="ident">store</span>(<span class="ident">write</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
+                <span class="ident">buffer</span>.<span class="ident">write</span>.<span class="ident">store</span>(<span class="number">0</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
                 <span class="self">self</span>.<span class="ident">prepared</span> <span class="op">=</span> <span class="ident">amount</span>;
                 <span class="kw">return</span> <span class="prelude-val">Ok</span>(<span class="ident">buffer</span>.<span class="ident">buffer</span>.<span class="ident">mut_slice</span>(<span class="number">0</span>..<span class="ident">amount</span>));
             }
@@ -1317,6 +1305,7 @@
                 <span class="comment">// write == len, check if we have room at the beginning of the buffer</span>
                 <span class="kw">if</span> <span class="ident">read</span> <span class="op">&gt;</span><span class="op">=</span> <span class="number">2</span> {
                     <span class="ident">buffer</span>.<span class="ident">watermark</span>.<span class="ident">store</span>(<span class="ident">len</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
+                    <span class="ident">buffer</span>.<span class="ident">write</span>.<span class="ident">store</span>(<span class="number">0</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
                     <span class="self">self</span>.<span class="ident">prepared</span> <span class="op">=</span> <span class="ident">read</span> <span class="op">-</span> <span class="number">1</span>;
                     <span class="kw">return</span> <span class="prelude-val">Ok</span>(<span class="ident">buffer</span>.<span class="ident">buffer</span>.<span class="ident">mut_slice</span>(<span class="number">0</span>..<span class="ident">read</span> <span class="op">-</span> <span class="number">1</span>));
                 }
@@ -1363,6 +1352,7 @@
                 <span class="kw">return</span> <span class="prelude-val">Err</span>(<span class="ident">PrepareError</span>::<span class="ident">NoRoom</span> { <span class="ident">max_available</span>: <span class="number">0</span> });
             } <span class="kw">else</span> {
                 <span class="ident">buffer</span>.<span class="ident">watermark</span>.<span class="ident">store</span>(<span class="ident">write</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
+                <span class="ident">buffer</span>.<span class="ident">write</span>.<span class="ident">store</span>(<span class="number">0</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
                 <span class="self">self</span>.<span class="ident">prepared</span> <span class="op">=</span> <span class="ident">available_before_read</span>;
                 <span class="kw">return</span> <span class="prelude-val">Ok</span>(<span class="ident">buffer</span>.<span class="ident">buffer</span>.<span class="ident">mut_slice</span>(<span class="number">0</span>..<span class="ident">available_before_read</span>));
             }
@@ -1399,24 +1389,10 @@
 
         <span class="kw">let</span> <span class="ident">buffer</span> <span class="op">=</span> <span class="kw">unsafe</span> { <span class="kw-2">&amp;</span><span class="kw-2">mut</span> (<span class="kw-2">*</span><span class="self">self</span>.<span class="ident">buffer</span>) };
         <span class="kw">let</span> <span class="ident">write</span> <span class="op">=</span> <span class="ident">buffer</span>.<span class="ident">write</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
-        <span class="kw">let</span> <span class="ident">read</span> <span class="op">=</span> <span class="ident">buffer</span>.<span class="ident">read</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
 
         <span class="self">self</span>.<span class="ident">prepared</span> <span class="op">-</span><span class="op">=</span> <span class="ident">amount</span>;
 
-        <span class="kw">let</span> <span class="ident">new_write</span> <span class="op">=</span> <span class="kw">if</span> <span class="ident">write</span> <span class="op">&gt;</span><span class="op">=</span> <span class="ident">read</span> {
-            <span class="comment">// We need to ajdust write to</span>
-            <span class="comment">// write + amount % watermark</span>
-            <span class="kw">let</span> <span class="ident">watermark</span> <span class="op">=</span> <span class="ident">buffer</span>.<span class="ident">watermark</span>.<span class="ident">load</span>(<span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
-            <span class="kw">if</span> <span class="ident">watermark</span> <span class="op">=</span><span class="op">=</span> <span class="ident">write</span> {
-                <span class="ident">amount</span>
-            } <span class="kw">else</span> {
-                <span class="ident">write</span> <span class="op">+</span> <span class="ident">amount</span>
-            }
-        } <span class="kw">else</span> {
-            <span class="comment">// We can just adjust write to</span>
-            <span class="comment">// write+amount</span>
-            <span class="ident">write</span> <span class="op">+</span> <span class="ident">amount</span>
-        };
+        <span class="kw">let</span> <span class="ident">new_write</span> <span class="op">=</span> <span class="ident">write</span> <span class="op">+</span> <span class="ident">amount</span>;
 
         <span class="ident">buffer</span>.<span class="ident">write</span>.<span class="ident">store</span>(<span class="ident">new_write</span>, <span class="ident">Ordering</span>::<span class="ident">SeqCst</span>);
 
@@ -1659,6 +1635,22 @@
         <span class="ident">prepared</span>[<span class="number">0</span>] <span class="op">=</span> <span class="number">1</span>;
         <span class="ident">writer</span>.<span class="ident">commit</span>(<span class="number">1</span>).<span class="ident">unwrap</span>();
         <span class="macro">assert_eq</span><span class="macro">!</span>(<span class="ident">writer</span>.<span class="ident">discard</span>(), <span class="number">1</span>);
+    }
+
+    <span class="attribute">#[<span class="ident">test</span>]</span>
+    <span class="kw">fn</span> <span class="ident">values_to_watermark_sets_read_to_0</span>() {
+        <span class="kw">let</span> <span class="ident">expected</span> <span class="op">=</span> [<span class="number">10</span>, <span class="number">20</span>, <span class="number">30</span>, <span class="number">40</span>, <span class="number">50</span>];
+        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">buffer</span> <span class="op">=</span> <span class="ident">expected</span>;
+        <span class="kw">let</span> <span class="kw-2">mut</span> <span class="ident">bip_buffer</span> <span class="op">=</span> <span class="ident">BipBuffer</span>::<span class="ident">new</span>(<span class="ident">StorageRef</span>::<span class="ident">new</span>(<span class="kw-2">&amp;</span><span class="kw-2">mut</span> <span class="ident">buffer</span>));
+        <span class="kw">let</span> (<span class="kw-2">mut</span> <span class="ident">reader</span>, <span class="kw-2">mut</span> <span class="ident">writer</span>) <span class="op">=</span> <span class="ident">bip_buffer</span>.<span class="ident">take_reader_writer</span>().<span class="ident">unwrap</span>();
+
+        <span class="ident">writer</span>.<span class="ident">prepare</span>(<span class="number">3</span>).<span class="ident">unwrap</span>();
+        <span class="ident">writer</span>.<span class="ident">commit</span>(<span class="number">3</span>).<span class="ident">unwrap</span>();
+        <span class="ident">reader</span>.<span class="ident">consume</span>(<span class="number">3</span>).<span class="ident">unwrap</span>();
+        <span class="ident">writer</span>.<span class="ident">prepare</span>(<span class="number">2</span>).<span class="ident">unwrap</span>();
+        <span class="ident">writer</span>.<span class="ident">commit</span>(<span class="number">2</span>).<span class="ident">unwrap</span>();
+
+        <span class="macro">assert</span><span class="macro">!</span>(<span class="ident">writer</span>.<span class="ident">prepare</span>(<span class="number">2</span>).<span class="ident">is_ok</span>());
     }
 }
 </pre></div>
