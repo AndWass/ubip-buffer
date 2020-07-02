@@ -48,7 +48,7 @@ pub enum PrepareError {
 
 #[derive(core::fmt::Debug, PartialEq)]
 pub enum ConsumeError {
-    NoneConsumed
+    NoneConsumed,
 }
 
 /// Trait used by BipBuffers to reference storage.
@@ -96,20 +96,17 @@ pub trait Storage {
     fn len(&self) -> usize;
 }
 
-pub struct StorageRef<'a, T>
-{
+pub struct StorageRef<'a, T> {
     buffer: &'a mut [T],
 }
 
-impl<'a, T> StorageRef<'a, T>
-{
+impl<'a, T> StorageRef<'a, T> {
     pub fn new(buffer: &'a mut [T]) -> Self {
         Self { buffer }
     }
 }
 
-impl<'a, T> Storage for StorageRef<'a, T>
-{
+impl<'a, T> Storage for StorageRef<'a, T> {
     type ValueType = T;
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         &self.buffer[range.start..range.end]
@@ -122,14 +119,12 @@ impl<'a, T> Storage for StorageRef<'a, T>
     }
 }
 
-pub struct UnsafeStorageRef<T>
-{
+pub struct UnsafeStorageRef<T> {
     buffer: *mut T,
     len: usize,
 }
 
-impl<'a, T> UnsafeStorageRef<T>
-{
+impl<'a, T> UnsafeStorageRef<T> {
     pub fn new(buffer: &mut [T]) -> Self {
         Self {
             buffer: buffer.as_mut_ptr(),
@@ -138,8 +133,7 @@ impl<'a, T> UnsafeStorageRef<T>
     }
 }
 
-impl<T> Storage for UnsafeStorageRef<T>
-{
+impl<T> Storage for UnsafeStorageRef<T> {
     type ValueType = T;
     fn slice(&self, range: core::ops::Range<usize>) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.buffer.add(range.start), range.len()) }
@@ -311,7 +305,7 @@ where
         let read = buffer.read.load(Ordering::SeqCst);
         if write >= read {
             // Write leads read, we can at most consume (write - read) number of elements
-            let amount = amount.min(write-read);
+            let amount = amount.min(write - read);
             if amount == 0 {
                 return Err(ConsumeError::NoneConsumed);
             }
